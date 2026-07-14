@@ -1,0 +1,37 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local / generated SQLite
+*.db
+*.db-wal
+*.db-shm
+dev.db
+
+# Bench / local runs
+bench_results.json
+*.log
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Tooling / OS
+.modal/
+.DS_Store
+.idea/
+.vscode/
+*.swp
