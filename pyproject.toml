@@ -1,7 +1,7 @@
 [project]
-name = "sqlite-rpc"
+name = "distributed-sqlite"
 version = "0.1.0"
-description = "Multi-tenant SQLite on Modal via Class RPC"
+description = "Multi-tenant SQLite on Modal — exclusive writer per named DB"
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.18.5",
