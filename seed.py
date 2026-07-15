@@ -1,4 +1,4 @@
-"""Seed demo notes via SqliteDatabase RPC.
+"""Seed demo notes via Class RPC.
 
     uv run modal run seed.py
     uv run modal run seed.py --tenants acme,globex
@@ -11,5 +11,10 @@ from sqlite import SqliteDatabase, app
 def seed(tenants: str = "acme,globex"):
     for tenant_id in (t.strip() for t in tenants.split(",") if t.strip()):
         db = SqliteDatabase(db_name=f"tenant-{tenant_id}")
-        db.execute.remote("INSERT INTO note (body) VALUES (?)", (f"hello from {tenant_id}",))
-        print(tenant_id, db.query.remote("SELECT id, body FROM note ORDER BY id LIMIT 50"))
+        db.execute.remote(
+            "INSERT INTO note (body) VALUES (?)", (f"hello from {tenant_id}",)
+        )
+        print(
+            tenant_id,
+            db.query.remote("SELECT id, body FROM note ORDER BY id LIMIT 50"),
+        )

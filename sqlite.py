@@ -1,12 +1,11 @@
 # ---
-# cmd: ["modal", "serve", "sqlite.py"]
+# cmd: ["modal", "serve", "api.py"]
 # deploy: true
 # ---
 #
-# One named DB → one writer container (max_containers=1 per db_name).
-# Hot file on /tmp; Volume snapshot in the background (~30s) and on exit.
-# HTTP mounts in-process (api.create_notes_app). Class RPC is for workers.
-# execute / query / executemany: trusted workspace callers only.
+# SqliteDatabase — exclusive writer per named DB (max_containers=1 per db_name).
+# Callers use Class RPC: execute / query / executemany (trusted workspace only).
+# Hot /tmp file; Volume snapshot ~every 30s and on exit.
 
 import os
 import re
@@ -16,8 +15,6 @@ import threading
 from pathlib import Path
 
 import modal
-
-from api import create_notes_app
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -34,12 +31,19 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 PERSIST_INTERVAL_S = 30.0
 WAL_SUFFIXES = ("-wal", "-shm")
 
+# Keep the writer and callers on one plane so Class RPC isn't cross-region.
+# routing_region is sticky on first deploy — recreate the Function/app to change it.
+REGION = "eu-west"
+ROUTING_REGION = "eu-west"
+PLACEMENT = {"region": REGION, "routing_region": ROUTING_REGION}
+
 
 @app.cls(
     volumes={"/data": volume},
     max_containers=1,  # per db_name — many tenants ⇒ many containers
     scaledown_window=5 * 60,
     timeout=5 * 60,
+    **PLACEMENT,
 )
 class SqliteDatabase:
     db_name: str = modal.parameter()
@@ -98,7 +102,7 @@ class SqliteDatabase:
                 pass
 
     def flush(self):
-        """Snapshot hot DB onto the Volume (side connection; safe from the timer thread)."""
+        """Checkpoint + copy hot DB to the Volume (side connection; thread-safe)."""
         if not self.path.exists():
             return
         with self._persist_lock:
@@ -149,6 +153,3 @@ class SqliteDatabase:
     def query(self, sql: str, params: tuple = ()) -> list:
         return [dict(row) for row in self.conn.execute(sql, params)]
 
-    @modal.asgi_app()
-    def web(self):
-        return create_notes_app(db_name=self.db_name, conn=self.conn)

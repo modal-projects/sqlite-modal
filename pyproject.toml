@@ -1,7 +1,7 @@
 [project]
 name = "distributed-sqlite"
 version = "0.1.0"
-description = "Multi-tenant SQLite on Modal — exclusive writer per named DB"
+description = "Multi-tenant SQLite on Modal via Class RPC"
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.18.5",
@@ -13,3 +13,9 @@ dependencies = [
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.21",
+    "ty>=0.0.59",
+]
