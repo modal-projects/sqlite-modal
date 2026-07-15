@@ -1,27 +1,17 @@
 # Distributed SQLite on Modal
 
-Architecture demo: **one exclusive writer per named database**, many databases in parallel.
-Not a managed database product.
+Multi-tenant SQLite on [Modal](https://modal.com): one exclusive writer container per named database, durable on a Volume.
 
-### Goals
+This is a copyable architecture example — not a managed database product. Think of each `SqliteDatabase(db_name=…)` as a Turso-style **primary** for that name. It does not implement embedded-replica / local-first sync.
 
-- Multi-tenant SQLite on Modal Volumes without multi-writer corruption
-- Scale across tenants (`db_name`), not replicas of one file
-- Turso-like *primary*: open a named DB, HTTP or Class RPC against it
-- Honest latency: in-process HTTP on the writer; Class RPC for workers
-
-### Non-goals
-
-- Embedded-replica / local-first sync (Turso push/pull) — needs a sync engine
-- Public arbitrary-SQL over the internet — RPC SQL is trusted workspace only
-- Strong sync durability on every write — Volume flush is periodic (~30s) + exit
+## Layout
 
 | File | Role |
 |------|------|
-| [`sqlite.py`](sqlite.py) | `SqliteDatabase` — writer, Volume, Class RPC, mounts HTTP |
-| [`api.py`](api.py) | Notes FastAPI factory (in-process on the writer) |
-| [`seed.py`](seed.py) / [`bench.py`](bench.py) | Seed + load tests |
+| [`sqlite.py`](sqlite.py) | `SqliteDatabase` — Volume writer, Class RPC, in-process HTTP |
+| [`api.py`](api.py) | Notes FastAPI app (mounted on the writer) |
 | [`models.py`](models.py) | SQLAlchemy schema (Alembic) |
+| [`seed.py`](seed.py) / [`bench.py`](bench.py) | Seed data and load tests |
 
 ## Architecture
 
@@ -29,10 +19,19 @@ Not a managed database product.
 HTTP  ──► SqliteDatabase(db_name=…).web   ← same container, local sqlite3
 Workers ──.remote──► SqliteDatabase
                          hot: /tmp/sqlite/{db}.db
-                         durable: Volume /data/{db}.db  (background + exit)
+                         durable: Volume /data/{db}.db
 ```
 
-`max_containers=1` is **per `db_name`**. Pick the DB with `?db_name=tenant-acme` (Modal Class parameter). Crash between flushes can lose recent writes.
+- `max_containers=1` is **per `db_name`** (many tenants → many containers).
+- Pick the DB with Modal’s Class parameter: `?db_name=tenant-acme`.
+- Volume flush is background (~30s) and on exit — not on every write. A crash between flushes can lose recent commits.
+- `execute` / `query` / `executemany` are for **trusted workspace callers** (arbitrary SQL).
+
+## Requirements
+
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/)
+- A [Modal](https://modal.com) account (`modal setup`)
 
 ## Quickstart
 
@@ -42,7 +41,7 @@ uv run modal serve sqlite.py
 ```
 
 ```bash
-export URL=https://…   # …-sqlitedatabase-web-dev.modal.run
+export URL=https://…-sqlitedatabase-web-dev.modal.run
 
 curl "$URL/health?db_name=tenant-acme"
 curl -X POST "$URL/notes?db_name=tenant-acme" \
@@ -51,20 +50,32 @@ curl "$URL/notes?db_name=tenant-acme"
 curl "$URL/notes?db_name=tenant-globex"
 ```
 
+Workers (Class RPC, no HTTP hop):
+
 ```python
 from sqlite import SqliteDatabase
 
 db = SqliteDatabase(db_name="tenant-acme")
 db.execute.remote("INSERT INTO note (body) VALUES (?)", ("hello",))
+db.query.remote("SELECT id, body FROM note ORDER BY id LIMIT 50")
 ```
 
 ```bash
 uv run modal run seed.py
-uv run modal run bench.py
+uv run modal run bench.py   # writes bench_results.json + docs/charts/
 ```
 
 ## Schema
 
-1. Edit `models.py`
+1. Edit [`models.py`](models.py)
 2. `uv run alembic revision --autogenerate -m "…"`
 3. Redeploy — Alembic runs on `@modal.enter`
+
+## Gotchas
+
+| Topic | Detail |
+|-------|--------|
+| Scaling | Scale by adding `db_name`s. Do not run multiple writers on one `.db`. |
+| Latency | In-process HTTP is fast; chatty single-row Class RPC is ~RTT-bound — prefer batches (`executemany`). |
+| Durability | Local `/tmp` first; Volume snapshots periodically. |
+| Sync | No multi-replica push/pull — one primary per name. |
