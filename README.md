@@ -102,7 +102,7 @@ Names: `^[A-Za-z][A-Za-z0-9_]{0,127}$`. Params: JSON scalars only (no BLOB).
 | `examples/notes/` | Single-DB smoke |
 | `examples/multi/` | Two DBs on one App |
 | `benchmarks/` | Live latency / throughput |
-| `docs/charts/` | PNGs from last bench run |
+| `docs/charts/` | Decision charts from last bench run |
 
 ## Runbooks
 
@@ -113,43 +113,51 @@ uv run modal run examples/notes/app.py
 uv run modal run examples/multi/app.py
 ```
 
-### Benchmarks + charts
+### Benchmarks
 
 ```bash
 uv run modal run benchmarks/app.py
-# writes benchmarks/results/latest.json (gitignored)
-# and docs/charts/*.png (committed)
+# → benchmarks/results/latest.json (gitignored)
+# → docs/charts/*.png
 ```
 
-Regenerate charts from an existing report:
-
-```bash
-uv run python -c "import json; from pathlib import Path; from benchmarks.charts import render_charts; render_charts(json.loads(Path('benchmarks/results/latest.json').read_text()))"
-```
+See [benchmarks/README.md](benchmarks/README.md) for scenarios and CLI knobs.
 
 ## Gotchas
 
 | Topic | Detail |
 |-------|--------|
-| Latency | Hot path ≈ Modal HTTP RTT (tens of ms), not SQLite |
+| Latency | Each `query` / `execute` costs about one Modal HTTP RTT (tens of ms) |
 | Bulk | Prefer `executemany` / `batch` over loops of `execute` |
-| `flush()` | ~seconds; skip unless you need a sync durability point |
+| `flush()` | Takes ~seconds; use when you need a sync durability point |
 | Warmth | `min_containers=0` cold-starts; use `1` for demos/benches |
 | Multi-writer | Never write the same Volume from scaled Functions |
 
-## Latest bench snapshot (eu-west)
+## Characteristics
 
-| Metric | p50 / rate |
-|--------|------------|
-| health / SELECT 1 / INSERT | ~43–45 ms |
-| Sequential write / read | ~21 ops/s |
-| `params_seq` batch (100 rows) | ~2260 rows/s |
-| INSERT + `flush` | ~1.9 s |
+From a recent `eu-west` / `aws` run (`min_containers=1` warm Server unless noted):
 
-![RTT floor](docs/charts/latency.png)
+| Metric | Value |
+|--------|-------|
+| Warm read p50 | ~23 ms |
+| Warm write p50 | ~24 ms |
+| Cold first request (`min_containers=0`, after idle) | ~7 s |
+| Warm after cold | ~43 ms p50 |
+| INSERT + `flush()` p50 | ~1.9 s |
+| `executemany` 100 rows | ~4.3k rows/s |
+| 16 concurrent clients on one DB | ~380 ops/s, p50 ~32 ms |
+| 2 named DBs writing in parallel | ~2× single-DB write rate |
 
-![Throughput](docs/charts/throughput.png)
+## Benchmark charts
 
-![Batching](docs/charts/batching.png)
+Ops/s and p50 latency as concurrent clients share one exclusive-writer DB:
 
-![Flush cost](docs/charts/flush.png)
+![Writer concurrency](docs/charts/writer_concurrency.png)
+
+Write rate for one named DB vs two named DBs in parallel:
+
+![Multi-DB scale-out](docs/charts/multi_db_scaleout.png)
+
+First SQL after scale-to-zero vs warm p50 on the same DB:
+
+![Cold vs warm](docs/charts/cold_vs_warm.png)

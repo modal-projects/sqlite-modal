@@ -1,4 +1,4 @@
-"""Render benchmark charts from a BenchReport."""
+"""Product-shaped charts: concurrency, multi-DB scale-out, cold vs warm."""
 
 from __future__ import annotations
 
@@ -8,11 +8,15 @@ from benchmarks.report import BenchReport
 
 CHARTS_DIR = Path(__file__).resolve().parent.parent / "docs" / "charts"
 
+_BLUE = "#1f6feb"
+_ORANGE = "#e8590c"
+_GREEN = "#2f9e44"
+_GRAY = "#868e96"
+
 
 def render_charts(
     report: BenchReport, out_dir: Path | None = None
 ) -> list[Path]:
-    """Write PNG bar charts; returns paths written."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -22,78 +26,104 @@ def render_charts(
     dest.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
 
-    def save_bar(
-        filename: str,
-        title: str,
-        ylabel: str,
-        labels: list[str],
-        values: list[float],
-        colors: list[str],
-    ) -> None:
-        fig, ax = plt.subplots(figsize=(7, 4))
-        bars = ax.bar(labels, values, color=colors[: len(labels)])
-        ax.set_title(title)
-        ax.set_ylabel(ylabel)
-        for bar, val in zip(bars, values, strict=True):
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height(),
-                f"{val:.0f}",
-                ha="center",
-                va="bottom",
-                fontsize=9,
-            )
-        fig.tight_layout()
+    def save(filename: str) -> None:
         path = dest / filename
+        fig = plt.gcf()
+        fig.tight_layout()
         fig.savefig(path, dpi=140)
         plt.close(fig)
         written.append(path)
 
-    rtt = report["rtt_floor"]
-    batch = report["single_vs_batch"]
-    flush = report["flush_cost"]
-    thr = report["throughput"]
+    conc = report["writer_concurrency"]
+    multi = report["multi_db_parallel"]
+    cold = report["cold_start"]
 
-    save_bar(
+    # 1) Exclusive writer under concurrency
+    fig, (ax_ops, ax_lat) = plt.subplots(
+        1, 2, figsize=(9.5, 4.0), constrained_layout=True
+    )
+    clients = [p["clients"] for p in conc["points"]]
+    ops = [p["ops_per_s"] for p in conc["points"]]
+    lats = [p["latency_ms"]["p50"] for p in conc["points"]]
+    ax_ops.plot(clients, ops, marker="o", color=_BLUE, linewidth=2)
+    ax_ops.set_xlabel("Concurrent insert clients")
+    ax_ops.set_ylabel("ops / s")
+    ax_ops.set_title("Throughput vs concurrency (one DB)")
+    ax_ops.set_xticks(clients)
+    ax_lat.plot(clients, lats, marker="o", color=_ORANGE, linewidth=2)
+    ax_lat.set_xlabel("Concurrent insert clients")
+    ax_lat.set_ylabel("Insert p50 (ms)")
+    ax_lat.set_title("Latency vs concurrency (one DB)")
+    ax_lat.set_xticks(clients)
+    path = dest / "writer_concurrency.png"
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+    written.append(path)
+
+    # 2) Multi-DB scale-out
+    plt.figure(figsize=(7.5, 4.2))
+    ax = plt.gca()
+    labels = ["1 DB", "2 DBs\n(combined)"]
+    values = [
+        multi["single_db_ops_per_s"],
+        multi["dual_combined_ops_per_s"],
+    ]
+    bars = ax.bar(labels, values, color=[_BLUE, _GREEN])
+    ax.set_ylabel("Insert ops / s")
+    ax.set_title("Write throughput: one named DB vs two in parallel")
+    for bar, val in zip(bars, values, strict=True):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            val,
+            f"{val:.0f}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
+    save("multi_db_scaleout.png")
+
+    # 3) Cold vs warm
+    plt.figure(figsize=(7.5, 4.2))
+    ax = plt.gca()
+    labels = ["Cold first request", "Warm p50"]
+    values = [cold["cold_first_ms"], cold["warm_p50_ms"]]
+    bars = ax.bar(labels, values, color=[_ORANGE, _BLUE])
+    ax.set_ylabel("Latency (ms)")
+    ax.set_title("SELECT 1 after scale-to-zero vs warm")
+    ax.set_yscale("log")
+    for bar, val in zip(bars, values, strict=True):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            val,
+            f"{val:.0f} ms",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
+    ax.annotate(
+        cold["note"],
+        xy=(0.5, 0.02),
+        xycoords="axes fraction",
+        ha="center",
+        va="bottom",
+        fontsize=8,
+        color=_GRAY,
+    )
+    save("cold_vs_warm.png")
+
+    for stale in (
+        "rtt_floor.png",
+        "api_shape.png",
+        "batch_size.png",
+        "flush_tax.png",
         "latency.png",
-        "HTTP RTT floor (p50)",
-        "ms",
-        ["health", "SELECT 1", "INSERT"],
-        [
-            rtt["health_ms"]["p50"],
-            rtt["select1_ms"]["p50"],
-            rtt["insert_ms"]["p50"],
-        ],
-        ["#1f6feb", "#1a7f37", "#8250df"],
-    )
-    save_bar(
         "throughput.png",
-        "Sequential HTTP throughput",
-        "ops / s",
-        ["writes", "reads"],
-        [thr["writes"]["ops_per_s"], thr["reads"]["ops_per_s"]],
-        ["#1f6feb", "#1a7f37"],
-    )
-    save_bar(
         "batching.png",
-        "Batching amortizes HTTP round-trips",
-        "throughput",
-        ["single execute\n(ops/s)", "batch params_seq\n(rows/s)"],
-        [
-            batch["single_execute"]["ops_per_s"],
-            batch["batch_params_seq"]["rows_per_s"],
-        ],
-        ["#1f6feb", "#1a7f37"],
-    )
-    save_bar(
         "flush.png",
-        "flush() is a sync volume.commit barrier",
-        "ms (p50)",
-        ["INSERT", "INSERT + flush"],
-        [
-            flush["insert_ms"]["p50"],
-            flush["insert_and_flush_ms"]["p50"],
-        ],
-        ["#1f6feb", "#cf222e"],
-    )
+        "multi_tenant.png",
+    ):
+        old = dest / stale
+        if old.exists():
+            old.unlink()
+
     return written

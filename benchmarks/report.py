@@ -8,10 +8,12 @@ from pathlib import Path
 from typing import TypedDict
 
 from benchmarks.scenarios import (
+    BatchSizeSweepResult,
+    ColdStartResult,
     FlushCostResult,
-    RttFloorResult,
-    SingleVsBatchResult,
-    ThroughputResult,
+    MultiDbParallelResult,
+    WarmLatencyResult,
+    WriterConcurrencyResult,
 )
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
@@ -26,20 +28,24 @@ class BenchMeta(TypedDict):
 
 class BenchReport(TypedDict):
     meta: BenchMeta
-    rtt_floor: RttFloorResult
-    single_vs_batch: SingleVsBatchResult
+    warm_latency: WarmLatencyResult
+    cold_start: ColdStartResult
+    writer_concurrency: WriterConcurrencyResult
+    multi_db_parallel: MultiDbParallelResult
+    batch_size_sweep: BatchSizeSweepResult
     flush_cost: FlushCostResult
-    throughput: ThroughputResult
 
 
 def build_report(
     *,
     region: str,
     cloud: str,
-    rtt_floor: RttFloorResult,
-    single_vs_batch: SingleVsBatchResult,
+    warm_latency: WarmLatencyResult,
+    cold_start: ColdStartResult,
+    writer_concurrency: WriterConcurrencyResult,
+    multi_db_parallel: MultiDbParallelResult,
+    batch_size_sweep: BatchSizeSweepResult,
     flush_cost: FlushCostResult,
-    throughput: ThroughputResult,
 ) -> BenchReport:
     return {
         "meta": {
@@ -47,14 +53,16 @@ def build_report(
             "region": region,
             "cloud": cloud,
             "note": (
-                "Modal Server HTTP; flush=sync volume.commit; "
-                "Volume also background-commits"
+                "Adoption suite: warm latency, cold start, exclusive-writer "
+                "concurrency, multi-DB scale-out, batch, flush"
             ),
         },
-        "rtt_floor": rtt_floor,
-        "single_vs_batch": single_vs_batch,
+        "warm_latency": warm_latency,
+        "cold_start": cold_start,
+        "writer_concurrency": writer_concurrency,
+        "multi_db_parallel": multi_db_parallel,
+        "batch_size_sweep": batch_size_sweep,
         "flush_cost": flush_cost,
-        "throughput": throughput,
     }
 
 
