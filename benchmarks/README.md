@@ -1,25 +1,45 @@
 # Benchmarks
 
-Live Server measurements (HTTP RTT, batching, flush, throughput).
+Live HTTP measurements against a warm Server (`min_containers=1`).
+
+## Setup
+
+Proxy tokens + `uv sync` (same as root README).
+
+## Run
 
 ```bash
-uv sync
-export MODAL_PROXY_TOKEN_ID=wk-…
-export MODAL_PROXY_TOKEN_SECRET=ws-…
-
 uv run modal run benchmarks/app.py
 uv run modal run benchmarks/app.py --n 20 --writes 50 --batch-n 100
 ```
 
-Writes `benchmarks/results/latest.json` (gitignored).
+Outputs:
 
-## Expect
+| Artifact | Location |
+|----------|----------|
+| JSON report | `benchmarks/results/latest.json` (gitignored) |
+| Charts | `docs/charts/*.png` (committed for README) |
 
-| Scenario | Typical shape |
-|----------|----------------|
-| `rtt_floor` | `/health`, `SELECT 1`, `INSERT` ≈ tens of ms (same ballpark) |
-| `single_vs_batch` | N× `execute` ≈ N× RTT; one `batch` / `params_seq` ≈ one RTT |
-| `flush_cost` | insert ≈ RTT; insert+`flush` ≈ seconds (`volume.commit`) |
-| `throughput` | ~1 / RTT ops/s for sequential single calls |
+## Scenarios
 
-Uses `min_containers=1` so cold start does not dominate.
+| Name | What it measures |
+|------|------------------|
+| `rtt_floor` | `/health`, `SELECT 1`, `INSERT` latency |
+| `single_vs_batch` | N single executes vs batch / `params_seq` |
+| `flush_cost` | insert vs insert + `flush` |
+| `throughput` | sequential write/read ops/s |
+
+## Charts
+
+| File | Story |
+|------|--------|
+| `latency.png` | RTT floor — health ≈ SQL |
+| `throughput.png` | Sequential ops/s |
+| `batching.png` | Why `executemany` / `batch` matter |
+| `flush.png` | Sync `volume.commit` cost |
+
+Regenerate from JSON without re-running Modal:
+
+```bash
+uv run python -c "import json; from pathlib import Path; from benchmarks.charts import render_charts; render_charts(json.loads(Path('benchmarks/results/latest.json').read_text()))"
+```

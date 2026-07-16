@@ -10,6 +10,7 @@ import json
 import modal
 
 from benchmarks.report import build_report, write_report
+from benchmarks.charts import render_charts
 from benchmarks.scenarios import (
     ensure_schema,
     flush_cost,
@@ -50,3 +51,5 @@ def main(
     print(json.dumps(report, indent=2))
     path = write_report(report)
     print(f"wrote {path}")
+    for chart in render_charts(report):
+        print(f"wrote {chart}")
