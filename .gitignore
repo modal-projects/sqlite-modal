@@ -22,6 +22,8 @@ dev.db
 
 # Bench / local runs
 bench_results.json
+profile_results.json
+benchmarks/results/
 *.log
 
 # Env / secrets

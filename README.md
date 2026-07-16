@@ -1,125 +1,95 @@
-# Distributed SQLite on Modal
+# sqlite_modal
 
-Multi-tenant SQLite on [Modal](https://modal.com): one exclusive writer container per named database, durable on a Volume. Callers use **Class RPC** (`.remote`).
+Named SQLite on [Modal Servers](https://modal.com/docs/guide/servers):
+`from_name` → `attach` → HTTP SQL (`query` / `execute` / `executemany` / `batch`).
 
-Copyable architecture example — not a managed database product.
-
-## Layout
-
-| File | Role |
-|------|------|
-| [`sqlite.py`](sqlite.py) | `SqliteDatabase` — Volume writer + Class RPC |
-| [`api.py`](api.py) | Example Notes HTTP (scales out; RPCs into the writer) |
-| [`models.py`](models.py) | SQLAlchemy schema (Alembic) |
-| [`seed.py`](seed.py) / [`bench.py`](bench.py) | Seed + load tests |
-
-## Architecture
+One exclusive-writer Server + Volume per name. Many named DBs can share one App.
+Clients (local or scaled Modal Functions) talk HTTP — do not mount the Volume for
+writes from multiple containers.
 
 ```text
-HTTP  ──► web() ──.remote──► SqliteDatabase(db_name=…)   max_containers=1
-Workers ──────────.remote──►┘
-                                   hot: /tmp/sqlite/{db}.db
-                                   durable: Volume /data/{db}.db
+Workers / local  ──HTTP──►  SqliteServer_{name}  ──►  Volume {name}-data
+                              (min_containers 0|1)         /data/db.sqlite
 ```
-
-- Scale across tenants: many `db_name`s → many writers.
-- HTTP is an optional demo surface; workers should call Class RPC directly.
-- Writer, HTTP, and bench runners share `REGION` / `ROUTING_REGION` in [`sqlite.py`](sqlite.py) so Class RPC stays in-region.
-- Volume flush is ~every 30s and on exit. Crash between flushes can lose recent writes.
-- `execute` / `query` / `executemany` are for **trusted workspace callers** (arbitrary SQL).
-
-### Relation to Turso / Archil
-
-| Idea | Turso | Archil | This example |
-|------|-------|--------|--------------|
-| DB-per-tenant | Named cloud DBs | SQLite files on disk | `db_name` Class parameter |
-| Exclusive writer | Cloud primary | Mount/`checkout` ownership | `max_containers=1` per name |
-| Hot + durable | Engine + cloud | Cache + S3 sync | `/tmp` + Volume flush |
-| Access API | Client / URL | Local `sqlite3` on mount | Class RPC `.remote` |
-| Replicas / sync | Embedded replicas, Sync | N/A (filesystem) | Not implemented |
-
-We implement a **Modal-native primary** (Turso-like open-named-DB; Archil-like exclusive ownership + background durability). We do not implement Turso embedded-replica / push-pull sync.
-
-## Requirements
-
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/)
-- A [Modal](https://modal.com) account (`modal setup`)
 
 ## Quickstart
 
 ```bash
 uv sync
-uv run modal serve api.py
+
+modal workspace proxy-tokens create
+export MODAL_PROXY_TOKEN_ID=wk-…
+export MODAL_PROXY_TOKEN_SECRET=ws-…
+modal workspace proxy-tokens allow "$MODAL_PROXY_TOKEN_ID" main
+
+uv run modal run examples/notes/app.py
 ```
-
-```bash
-export URL=https://…-web-dev.modal.run
-
-curl "$URL/health"
-curl -X POST "$URL/t/acme/notes" -H 'content-type: application/json' \
-  -d '{"body":"hello"}'
-curl "$URL/t/acme/notes"
-curl "$URL/t/globex/notes"
-```
-
-Workers:
 
 ```python
-from sqlite import SqliteDatabase
+import modal
+from sqlite_modal import Sqlite
 
-db = SqliteDatabase(db_name="tenant-acme")
-db.execute.remote("INSERT INTO note (body) VALUES (?)", ("hello",))
-db.query.remote("SELECT id, body FROM note ORDER BY id LIMIT 50")
+app = modal.App("my-app")
+
+db = Sqlite.from_name("orders")
+db.attach(app, region="eu-west", cloud="aws")
+
+@app.local_entrypoint()
+def main() -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, v TEXT NOT NULL)"
+    )
+    db.executemany("INSERT INTO t (v) VALUES (?)", [["a"], ["b"], ["c"]])
+    print(db.query("SELECT id, v FROM t ORDER BY id"))
+    db.flush()   # optional sync barrier (~seconds); Volume also background-commits
+    db.close()
+```
+
+Names: `^[A-Za-z][A-Za-z0-9_]{0,127}$`. Params: JSON scalars only (no `bytes`/BLOB).
+
+## Layout
+
+| Path | Role |
+|------|------|
+| [`sqlite_modal/`](sqlite_modal/) | Library (`Sqlite` client, HTTP API, private Server) |
+| [`examples/notes/`](examples/notes/) | Single-DB smoke |
+| [`examples/multi/`](examples/multi/) | Two DBs on one App |
+| [`tests/`](tests/) | Unit tests (no cloud) |
+| [`benchmarks/`](benchmarks/) | Live Server latency / throughput |
+
+## API
+
+| Member | Role |
+|--------|------|
+| `Sqlite.from_name(name, *, timeout=, max_retries=)` | Named DB → Volume `{name}-data` |
+| `attach(app, region=, cloud=, min_containers=0\|1, …)` | Register Server on App |
+| `query` / `execute` | One statement / one HTTP RTT |
+| `executemany` / `batch` | Many rows or ops / one RTT (prefer for bulk) |
+| `flush` | WAL checkpoint + sync `volume.commit` (~seconds) |
+| `close` | Close HTTP client (Server keeps running) |
+| `url` | Server URL after serve/deploy |
+| Exceptions | `InvalidNameError`, `NotAttachedError`, `AlreadyAttachedError`, `AuthError`, `SqlError`, `ServiceError` |
+
+`sqlite_modal.db.Database` is internal to the Server process — not an app API.
+
+Modal object name for ops: `SqliteServer_{name}`.
+
+## Performance notes
+
+- Hot path ≈ one Modal HTTP RTT (typically tens of ms), not local SQLite.
+- Loops of `execute` ≈ N × RTT; use `executemany` / `batch` for bulk.
+- `flush()` ≈ seconds (sync Volume commit). Skip on the hot path unless you need a durability barrier.
+- `min_containers=0` scales to zero; use `1` when first-byte latency matters.
+
+## Develop
+
+```bash
+uv run pytest
+uv run ruff check sqlite_modal examples benchmarks tests
+uv run ty check sqlite_modal examples benchmarks tests
 ```
 
 ```bash
-uv run modal run seed.py
-uv run modal run bench.py   # bench_results.json + docs/charts/
+uv run modal run examples/multi/app.py
+uv run modal run benchmarks/app.py
 ```
-
-## Schema
-
-1. Edit [`models.py`](models.py)
-2. `uv run alembic revision --autogenerate -m "…"`
-3. Redeploy — Alembic runs on `@modal.enter`
-
-## Benchmarks
-
-`uv run modal run bench.py` — Class RPC (`.remote.aio`) against `SqliteDatabase`, warm containers, ~250B payloads, concurrency 64, `region` / `routing_region` = `eu-west`.
-
-Latest run (see `docs/charts/`):
-
-| Scenario | Result |
-|----------|--------|
-| Single-row writes | ~137 ops/s · p50 **378 ms** · p95 737 ms |
-| Point reads | ~158 ops/s · p50 **400 ms** · p95 459 ms |
-| `executemany` (200-row batches) | **~3773 rows/s** |
-| Two tenants in parallel | **~339 combined ops/s** |
-
-### Throughput
-
-![Class RPC throughput](docs/charts/throughput.png)
-
-### Latency (p50)
-
-![Class RPC latency](docs/charts/latency.png)
-
-### Batching
-
-![Batching amortizes RPC](docs/charts/batching.png)
-
-### Multi-tenant scale-out
-
-![Two tenants in parallel](docs/charts/multi_tenant.png)
-
-Chatty single-row Class RPC is ~RTT-bound (transport, not SQLite). Prefer `executemany` for bulk writes; scale out with more `db_name`s.
-
-## Gotchas
-
-| Topic | Detail |
-|-------|--------|
-| Scaling | More `db_name`s, not more writers on one file. |
-| Latency | Chatty `.remote` is transport-bound; batch when you can. |
-| Durability | Local `/tmp` first; Volume snapshots periodically. |
-| HTTP | Adds a hop (HTTP → RPC → SQLite). Prefer direct `.remote` for workers. |
