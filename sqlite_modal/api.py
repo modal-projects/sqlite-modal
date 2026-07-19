@@ -1,140 +1,200 @@
-"""SQL HTTP API — FastAPI app served by uvicorn in the Server container."""
+"""HTTP API — FastAPI app served by uvicorn in the Server container."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sqlite3
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from typing import Literal, TypeVar
 
 import modal
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.types import ASGIApp
+from pydantic import BaseModel, Field, field_validator
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from sqlite_modal.db import (
-    DEFAULT_DB_PATH,
-    BatchRequest,
-    Database,
-    SqlRequest,
-)
+from sqlite_modal.database import BatchOp, Database, SqlParam
 
 logger = logging.getLogger("sqlite_modal.api")
 
-MAX_BODY_BYTES = 16 * 1024 * 1024
+T = TypeVar("T")
 
 
-class _BodySizeLimitMiddleware(BaseHTTPMiddleware):
-    def __init__(
-        self, app: ASGIApp, max_body_bytes: int = MAX_BODY_BYTES
-    ) -> None:
-        super().__init__(app)
-        self._max_body_bytes = max_body_bytes
+class SqlBody(BaseModel):
+    sql: str
+    params: list[SqlParam] = Field(default_factory=list)
 
-    async def dispatch(
-        self,
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
-        content_length = request.headers.get("content-length")
+
+class BatchOpBody(BaseModel):
+    type: Literal["query", "execute"]
+    sql: str
+    params: list[SqlParam] = Field(default_factory=list)
+    params_seq: list[list[SqlParam]] | None = None
+
+    @field_validator("params_seq")
+    @classmethod
+    def _cap_params_seq(
+        cls, value: list[list[SqlParam]] | None
+    ) -> list[list[SqlParam]] | None:
+        if value is not None and len(value) > Database.MAX_PARAMS_SEQ:
+            raise ValueError(f"params_seq exceeds {Database.MAX_PARAMS_SEQ} rows")
+        return value
+
+
+class BatchBody(BaseModel):
+    ops: list[BatchOpBody]
+
+    @field_validator("ops")
+    @classmethod
+    def _cap_ops(cls, value: list[BatchOpBody]) -> list[BatchOpBody]:
+        if len(value) > Database.MAX_BATCH_OPS:
+            raise ValueError(f"batch exceeds {Database.MAX_BATCH_OPS} ops")
+        return value
+
+    def as_batch_ops(self) -> list[BatchOp]:
+        out: list[BatchOp] = []
+        for op in self.ops:
+            item: BatchOp = {"type": op.type, "sql": op.sql}
+            if op.params_seq is not None:
+                item["params_seq"] = op.params_seq
+            else:
+                item["params"] = op.params
+            out.append(item)
+        return out
+
+
+class BodySizeLimit:
+    """Reject request bodies larger than ``max_bytes``."""
+
+    def __init__(self, app: ASGIApp, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = {
+            k.decode("latin-1").lower(): v.decode("latin-1")
+            for k, v in scope.get("headers", [])
+        }
+        content_length = headers.get("content-length")
         if content_length is not None:
             try:
                 length = int(content_length)
             except ValueError:
-                return JSONResponse(
+                await JSONResponse(
                     {"error": "invalid content-length"}, status_code=400
-                )
-            if length > self._max_body_bytes:
-                return JSONResponse(
+                )(scope, receive, send)
+                return
+            if length > self.max_bytes:
+                await JSONResponse(
                     {"error": "request body too large"}, status_code=413
-                )
-        return await call_next(request)
+                )(scope, receive, send)
+                return
+
+        body = bytearray()
+        more_body = True
+        while more_body:
+            message = await receive()
+            if message["type"] != "http.request":
+                continue
+            chunk = message.get("body", b"")
+            if chunk:
+                body.extend(chunk)
+            if len(body) > self.max_bytes:
+                await JSONResponse(
+                    {"error": "request body too large"}, status_code=413
+                )(scope, receive, send)
+                return
+            more_body = bool(message.get("more_body", False))
+
+        payload = bytes(body)
+        sent = False
+
+        async def replay() -> Message:
+            nonlocal sent
+            if sent:
+                return {"type": "http.disconnect"}
+            sent = True
+            return {"type": "http.request", "body": payload, "more_body": False}
+
+        await self.app(scope, replay, send)
 
 
-@asynccontextmanager
-async def lifespan(api: FastAPI) -> AsyncIterator[None]:
-    name = os.environ["SQLITE_MODAL_NAME"]
-    volume = modal.Volume.from_name(f"{name}-data")
-    api.state.db = Database.from_path(DEFAULT_DB_PATH, volume)
-    try:
-        yield
-    finally:
-        db: Database = api.state.db
-        db.close()
+class SqlApi:
+    """HTTP SQL surface over a ``Database`` held on the FastAPI app state."""
+
+    MAX_BODY_BYTES = 16 * 1024 * 1024
+
+    def __init__(self) -> None:
+        self.app = FastAPI(title="sqlite-modal", lifespan=self.lifespan)
+        self.app.add_middleware(BodySizeLimit, max_bytes=self.MAX_BODY_BYTES)
+        self.app.add_api_route("/health", self.health, methods=["GET"])
+        self.app.add_api_route("/v1/execute", self.execute, methods=["POST"])
+        self.app.add_api_route("/v1/query", self.query, methods=["POST"])
+        self.app.add_api_route("/v1/batch", self.batch, methods=["POST"])
+        self.app.add_api_route("/v1/flush", self.flush, methods=["POST"])
+
+    @asynccontextmanager
+    async def lifespan(self, api: FastAPI) -> AsyncIterator[None]:
+        name = os.environ["SQLITE_MODAL_NAME"]
+        volume = modal.Volume.from_name(f"{name}-data")
+        api.state.db = Database.from_path(Database.DEFAULT_PATH, volume)
+        try:
+            yield
+        finally:
+            db: Database = api.state.db
+            await asyncio.to_thread(db.close, commit=True)
+
+    def _run(self, fn: Callable[[], T]) -> JSONResponse | T:
+        try:
+            return fn()
+        except (sqlite3.Error, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("sqlite_modal api internal error: %s", exc)
+            return JSONResponse({"error": "internal error"}, status_code=500)
+
+    def health(self) -> JSONResponse:
+        db: Database = self.app.state.db
+        try:
+            db.query("SELECT 1")
+            return JSONResponse({"ok": True})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("health check failed: %s", exc)
+            return JSONResponse(
+                {"ok": False, "error": "internal error"}, status_code=503
+            )
+
+    def execute(self, body: SqlBody) -> JSONResponse:
+        db: Database = self.app.state.db
+        result = self._run(lambda: db.execute(body.sql, body.params))
+        return result if isinstance(result, JSONResponse) else JSONResponse(result)
+
+    def query(self, body: SqlBody) -> JSONResponse:
+        db: Database = self.app.state.db
+        result = self._run(lambda: db.query(body.sql, body.params))
+        if isinstance(result, JSONResponse):
+            return result
+        return JSONResponse({"rows": result})
+
+    def batch(self, body: BatchBody) -> JSONResponse:
+        db: Database = self.app.state.db
+        result = self._run(lambda: db.batch(body.as_batch_ops()))
+        if isinstance(result, JSONResponse):
+            return result
+        return JSONResponse({"results": result})
+
+    def flush(self) -> JSONResponse:
+        db: Database = self.app.state.db
+        result = self._run(db.flush)
+        return result if isinstance(result, JSONResponse) else JSONResponse({})
 
 
-app = FastAPI(title="sqlite-modal", lifespan=lifespan)
-app.add_middleware(_BodySizeLimitMiddleware)
-
-
-def _sql_error_response(exc: sqlite3.Error) -> JSONResponse:
-    return JSONResponse({"error": str(exc)}, status_code=400)
-
-
-def _internal_error_response(exc: BaseException) -> JSONResponse:
-    logger.exception("sqlite_modal api internal error: %s", exc)
-    return JSONResponse({"error": "internal error"}, status_code=500)
-
-
-@app.get("/health")
-def health() -> JSONResponse:
-    db: Database = app.state.db
-    try:
-        db.query("SELECT 1")
-        return JSONResponse({"ok": True})
-    except sqlite3.Error as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("health check internal error: %s", exc)
-        return JSONResponse(
-            {"ok": False, "error": "internal error"}, status_code=503
-        )
-
-
-@app.post("/v1/execute")
-def http_execute(body: SqlRequest) -> JSONResponse:
-    db: Database = app.state.db
-    try:
-        return JSONResponse(db.execute(body["sql"], body["params"]))
-    except sqlite3.Error as exc:
-        return _sql_error_response(exc)
-    except Exception as exc:  # noqa: BLE001
-        return _internal_error_response(exc)
-
-
-@app.post("/v1/query")
-def http_query(body: SqlRequest) -> JSONResponse:
-    db: Database = app.state.db
-    try:
-        rows = db.query(body["sql"], body["params"])
-        return JSONResponse({"rows": rows})
-    except sqlite3.Error as exc:
-        return _sql_error_response(exc)
-    except Exception as exc:  # noqa: BLE001
-        return _internal_error_response(exc)
-
-
-@app.post("/v1/batch")
-def http_batch(body: BatchRequest) -> JSONResponse:
-    db: Database = app.state.db
-    try:
-        results = db.batch(body["ops"])
-        return JSONResponse({"results": results})
-    except sqlite3.Error as exc:
-        return _sql_error_response(exc)
-    except Exception as exc:  # noqa: BLE001
-        return _internal_error_response(exc)
-
-
-@app.post("/v1/flush")
-def http_flush() -> JSONResponse:
-    db: Database = app.state.db
-    try:
-        db.flush()
-        return JSONResponse({})
-    except sqlite3.Error as exc:
-        return _sql_error_response(exc)
-    except Exception as exc:  # noqa: BLE001
-        return _internal_error_response(exc)
+api = SqlApi()
+app = api.app

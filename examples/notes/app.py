@@ -9,33 +9,37 @@
 
 from __future__ import annotations
 
+import os
+
 import modal
 
 from examples.notes.schema import NOTE_DDL
 from sqlite_modal import Sqlite
 
-REGION = "eu-west"
-CLOUD = "aws"
+REGION = os.environ.get("SQLITE_MODAL_REGION", "eu-west")
+CLOUD = os.environ.get("SQLITE_MODAL_CLOUD", "aws")
+MIN_CONTAINERS = int(os.environ.get("SQLITE_MODAL_MIN_CONTAINERS", "1"))
 
 app = modal.App("example-sqlite")
 
 db = Sqlite.from_name("notes")
-db.attach(app, region=REGION, cloud=CLOUD, min_containers=1)
+db.attach(app, region=REGION, cloud=CLOUD, min_containers=MIN_CONTAINERS)
 
 
 @app.local_entrypoint()
 def main() -> None:
     """Smoke: schema + executemany insert + query + flush."""
-    db.execute(NOTE_DDL)
-    db.execute("DELETE FROM note")
-    db.executemany(
-        "INSERT INTO note (body) VALUES (?)",
-        [
-            ["hello from notes"],
-            ["second row"],
-            ["third row"],
-        ],
-    )
-    print(db.query("SELECT id, body FROM note ORDER BY id"))
-    print("url", db.url)
-    db.flush()
+    with db:
+        db.execute(NOTE_DDL)
+        db.execute("DELETE FROM note")
+        db.executemany(
+            "INSERT INTO note (body) VALUES (?)",
+            [
+                ["hello from notes"],
+                ["second row"],
+                ["third row"],
+            ],
+        )
+        print(db.query("SELECT id, body FROM note ORDER BY id"))
+        print("url", db.url)
+        db.flush()

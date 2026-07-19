@@ -15,6 +15,7 @@ import pytest
 from sqlite_modal import (
     AlreadyAttachedError,
     AuthError,
+    ConfigError,
     InvalidNameError,
     NotAttachedError,
     ServiceError,
@@ -22,7 +23,6 @@ from sqlite_modal import (
     Sqlite,
 )
 from sqlite_modal import client as client_mod
-from sqlite_modal.db import BatchRequest, SqlRequest
 from sqlite_modal.server import Server
 
 
@@ -49,6 +49,7 @@ class AttachCall(TypedDict):
     serialized: bool | None
     cls_name: str
     env: dict[str, str] | None
+    exit_grace_period: int | None
 
 
 def _mock_attach(
@@ -70,6 +71,9 @@ def _mock_attach(
                     "serialized": cast(bool | None, kwargs.get("serialized")),
                     "cls_name": cls.__name__,
                     "env": cast(dict[str, str] | None, env),
+                    "exit_grace_period": cast(
+                        int | None, kwargs.get("exit_grace_period")
+                    ),
                 }
             )
             return MagicMock()
@@ -90,7 +94,12 @@ def test_from_name_rejects_invalid() -> None:
         Sqlite.from_name("1x")
 
 
-def test_repr_and_close(db: Sqlite) -> None:
+def test_config_rejects_bad_timeout() -> None:
+    with pytest.raises(ConfigError, match="timeout"):
+        Sqlite.from_name("ok", timeout=0)
+
+
+def test_repr_close_and_context(db: Sqlite) -> None:
     assert "test_db" in repr(db)
     assert "attached=True" in repr(db)
     db._http = httpx.Client()
@@ -98,11 +107,20 @@ def test_repr_and_close(db: Sqlite) -> None:
     assert db._http is None
     db.close()  # idempotent
 
+    with Sqlite.from_name("ctx") as ctx:
+        ctx._http = httpx.Client()
+    assert ctx._http is None
+
 
 def test_server_for_name() -> None:
     cls = Server.for_name("orders")
     assert cls.__name__ == "SqliteServer_orders"
     assert issubclass(cls, Server)
+
+
+def test_server_pip_packages_nonempty() -> None:
+    assert any("fastapi" in pkg for pkg in Server.PIP_PACKAGES)
+    assert any("uvicorn" in pkg for pkg in Server.PIP_PACKAGES)
 
 
 def test_attach_allows_multiple_dbs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -117,6 +135,7 @@ def test_attach_allows_multiple_dbs(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls[1]["serialized"] is True
     assert calls[0]["cls_name"] == "SqliteServer_alpha"
     assert calls[1]["cls_name"] == "SqliteServer_beta"
+    assert calls[0]["exit_grace_period"] == 15
     assert client_mod._attached_names[app] == {"alpha", "beta"}
 
 
@@ -144,7 +163,7 @@ def test_attach_rejects_bad_min_containers(
     app = modal.App("test-min")
     _mock_attach(monkeypatch, app)
     db = Sqlite.from_name("x")
-    with pytest.raises(InvalidNameError, match="min_containers"):
+    with pytest.raises(ConfigError, match="min_containers"):
         db.attach(app, region="eu-west", cloud="aws", min_containers=2)
 
 
@@ -163,10 +182,10 @@ def test_proxy_headers_require_env(db: Sqlite) -> None:
 
 
 def test_execute_encodes_params(db: Sqlite, proxy_env: None) -> None:
-    seen: list[tuple[str, SqlRequest, dict[str, str]]] = []
+    seen: list[tuple[str, dict[str, object], dict[str, str]]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        body = cast(SqlRequest, json.loads(request.content.decode()))
+        body = cast(dict[str, object], json.loads(request.content.decode()))
         seen.append((str(request.url), body, dict(request.headers)))
         return httpx.Response(200, json={"rowcount": 1, "lastrowid": 7})
 
@@ -190,10 +209,10 @@ def test_query_returns_rows(db: Sqlite, proxy_env: None) -> None:
 
 
 def test_batch_encodes_ops(db: Sqlite, proxy_env: None) -> None:
-    seen: list[BatchRequest] = []
+    seen: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(cast(BatchRequest, json.loads(request.content.decode())))
+        seen.append(cast(dict[str, object], json.loads(request.content.decode())))
         return httpx.Response(
             200,
             json={
@@ -215,17 +234,17 @@ def test_batch_encodes_ops(db: Sqlite, proxy_env: None) -> None:
             {"type": "query", "sql": "SELECT COUNT(*) AS n FROM t", "params": []},
         ]
     )
-    assert len(seen[0]["ops"]) == 2
+    assert len(cast(list[object], seen[0]["ops"])) == 2
     assert out[0] == {"rowcount": 2, "lastrowid": 2}
     assert out[1] == {"rows": [{"n": 2}]}
 
 
 def test_executemany_posts_batch(db: Sqlite, proxy_env: None) -> None:
-    seen: list[BatchRequest] = []
+    seen: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert str(request.url).endswith("/v1/batch")
-        seen.append(cast(BatchRequest, json.loads(request.content.decode())))
+        seen.append(cast(dict[str, object], json.loads(request.content.decode())))
         return httpx.Response(
             200, json={"results": [{"rowcount": 2, "lastrowid": 2}]}
         )
@@ -270,6 +289,24 @@ def test_http_4xx_raises_sql_error(db: Sqlite, proxy_env: None) -> None:
     assert info.value.status_code == 400
 
 
+def test_http_401_raises_auth_error(db: Sqlite, proxy_env: None) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "unauthorized"})
+
+    _install_transport(db, httpx.MockTransport(handler))
+    with pytest.raises(AuthError, match="unauthorized"):
+        db.execute("INSERT INTO t (v) VALUES (?)", ("x",))
+
+
+def test_http_413_raises_service_error(db: Sqlite, proxy_env: None) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(413, json={"error": "request body too large"})
+
+    _install_transport(db, httpx.MockTransport(handler))
+    with pytest.raises(ServiceError, match="413"):
+        db.execute("INSERT INTO t (v) VALUES (?)", ("x",))
+
+
 def test_http_5xx_raises_service_error(db: Sqlite, proxy_env: None) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"error": "internal error"})
@@ -294,6 +331,58 @@ def test_retries_503_then_ok(
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     assert db.query("SELECT 1 AS ok") == [{"ok": 1}]
     assert calls["n"] == 3
+
+
+def test_mutate_retries_connect_error(
+    db: Sqlite, proxy_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("refused", request=request)
+        return httpx.Response(200, json={"rowcount": 1, "lastrowid": 1})
+
+    _install_transport(db, httpx.MockTransport(handler))
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    assert db.execute("INSERT INTO t (v) VALUES (?)", ("x",)) == {
+        "rowcount": 1,
+        "lastrowid": 1,
+    }
+    assert calls["n"] == 2
+
+
+def test_mutate_does_not_retry_read_timeout(
+    db: Sqlite, proxy_env: None
+) -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        raise httpx.ReadTimeout("slow", request=request)
+
+    _install_transport(db, httpx.MockTransport(handler))
+    with pytest.raises(ServiceError, match="transport error after send"):
+        db.execute("INSERT INTO t (v) VALUES (?)", ("x",))
+    assert calls["n"] == 1
+
+
+def test_query_retries_read_timeout(
+    db: Sqlite, proxy_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ReadTimeout("slow", request=request)
+        return httpx.Response(200, json={"rows": [{"ok": 1}]})
+
+    _install_transport(db, httpx.MockTransport(handler))
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    assert db.query("SELECT 1 AS ok") == [{"ok": 1}]
+    assert calls["n"] == 2
 
 
 def test_flush_posts_empty_body(db: Sqlite, proxy_env: None) -> None:

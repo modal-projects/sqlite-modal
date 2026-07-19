@@ -6,10 +6,11 @@ types. Many Sqlites per App (one Server each).
 """
 
 from sqlite_modal.client import Sqlite
-from sqlite_modal.db import BatchOp, ExecuteResult, Row
+from sqlite_modal.database import BatchOp, ExecuteResult, Row
 from sqlite_modal.exceptions import (
     AlreadyAttachedError,
     AuthError,
+    ConfigError,
     InvalidNameError,
     NotAttachedError,
     ServiceError,
@@ -21,6 +22,7 @@ __all__ = [
     "AlreadyAttachedError",
     "AuthError",
     "BatchOp",
+    "ConfigError",
     "ExecuteResult",
     "InvalidNameError",
     "NotAttachedError",

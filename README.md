@@ -8,13 +8,14 @@ exclusive writer. Clients talk HTTP; the Server owns the Volume.
 ## Overview
 
 Each named DB is one Modal Server (`SqliteServer_{name}`) plus Volume
-`{name}-data` mounted at `/data`. Scale **clients** (Functions, workers);
-keep **one writer** (`min_containers` 0 or 1). Do not mount that Volume for
-writes from many containers.
+`{name}-data` mounted at `/data`. Scale **clients** (Functions, workers).
+Exclusivity is a **Server singleton** (`target_concurrency` unset — do not
+fan out). `min_containers` is warmth only (`0` scale-to-zero, `1` keep warm).
+Do not mount that Volume for writes from many containers.
 
 ```text
 local / workers  ──HTTP──►  SqliteServer_{name}  ──►  Volume {name}-data
-                             min_containers 0|1         /data/db.sqlite
+                             singleton writer           /data/db.sqlite
 ```
 
 ### Dependencies
@@ -66,16 +67,17 @@ db.attach(app, region="eu-west", cloud="aws")
 
 @app.local_entrypoint()
 def main() -> None:
-    db.execute(
-        "CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, v TEXT NOT NULL)"
-    )
-    db.executemany("INSERT INTO t (v) VALUES (?)", [["a"], ["b"], ["c"]])
-    print(db.query("SELECT id, v FROM t ORDER BY id"))
-    db.flush()  # optional; ~seconds — Volume also background-commits
-    db.close()
+    with db:
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, v TEXT NOT NULL)"
+        )
+        db.executemany("INSERT INTO t (v) VALUES (?)", [["a"], ["b"], ["c"]])
+        print(db.query("SELECT id, v FROM t ORDER BY id"))
+        db.flush()  # optional sync barrier; Volume also background-commits
 ```
 
 Names: `^[A-Za-z][A-Za-z0-9_]{0,127}$`. Params: JSON scalars only (no BLOB).
+Empty `executemany([])` skips the HTTP round-trip.
 
 ### API
 
@@ -85,11 +87,11 @@ Names: `^[A-Za-z][A-Za-z0-9_]{0,127}$`. Params: JSON scalars only (no BLOB).
 | `attach(app, region=, cloud=, min_containers=0\|1, …)` | Register Server |
 | `query` / `execute` | One statement / one HTTP RTT |
 | `executemany` / `batch` | Bulk / one RTT |
-| `flush` | Sync `volume.commit` barrier |
-| `close` | Close HTTP client |
-| Exceptions | `InvalidNameError`, `NotAttachedError`, `AlreadyAttachedError`, `AuthError`, `SqlError`, `ServiceError` |
+| `flush` | Sync WAL checkpoint + `volume.commit` |
+| `close` / context manager | Close HTTP client |
+| Exceptions | `InvalidNameError`, `ConfigError`, `NotAttachedError`, `AlreadyAttachedError`, `AuthError`, `SqlError`, `ServiceError` |
 
-`sqlite_modal.db.Database` is Server-internal — not an app API.
+`sqlite_modal.database.Database` is Server-internal — not an app API.
 
 ## Architecture
 
@@ -98,7 +100,7 @@ Names: `^[A-Za-z][A-Za-z0-9_]{0,127}$`. Params: JSON scalars only (no BLOB).
 | `sqlite_modal/client.py` | Public `Sqlite` HTTP client |
 | `sqlite_modal/server.py` | Modal Server (Popen uvicorn) |
 | `sqlite_modal/api.py` | FastAPI SQL routes |
-| `sqlite_modal/db.py` | Local sqlite3 + Volume commit |
+| `sqlite_modal/database.py` | Local sqlite3 + Volume commit |
 | `examples/notes/` | Single-DB smoke |
 | `examples/multi/` | Two DBs on one App |
 | `benchmarks/` | Live latency / throughput |
@@ -127,10 +129,12 @@ See [benchmarks/README.md](benchmarks/README.md) for scenarios and CLI knobs.
 
 | Topic | Detail |
 |-------|--------|
+| Exclusivity | Singleton Server (no `target_concurrency`); not `min_containers` |
 | Latency | Each `query` / `execute` costs about one Modal HTTP RTT (tens of ms) |
 | Bulk | Prefer `executemany` / `batch` over loops of `execute` |
-| `flush()` | Takes ~seconds; use when you need a sync durability point |
+| Durability | Background Volume commits + `flush()` + exit commit; `execute` alone is not a sync Volume barrier |
 | Warmth | `min_containers=0` cold-starts; use `1` for demos/benches |
+| Rolling deploy | Brief dual-open possible while Modal replaces a Server |
 | Multi-writer | Never write the same Volume from scaled Functions |
 
 ## Characteristics
