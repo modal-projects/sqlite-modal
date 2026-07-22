@@ -38,7 +38,9 @@ def api_client(
         return volume
 
     monkeypatch.setattr(api_mod.modal.Volume, "from_name", fake_from_name)
-    monkeypatch.setattr(api_mod, "DEFAULT_DB_PATH", temp_db_path)
+    monkeypatch.setattr(
+        api_mod.Database, "DEFAULT_PATH", temp_db_path
+    )
 
     with TestClient(api_mod.app) as client:
         yield client

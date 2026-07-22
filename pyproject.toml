@@ -10,11 +10,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Keep pins aligned with ``Server.PIP_PACKAGES`` in sqlite_modal/server.py.
 server = [
     "fastapi[standard]>=0.139.0,<1",
     "uvicorn>=0.34.0,<1",
 ]
-example = [
+bench = [
     "matplotlib>=3.11.0,<4",
 ]
 
@@ -27,7 +28,7 @@ packages = ["sqlite_modal"]
 
 [dependency-groups]
 dev = [
-    "sqlite-modal[server,example]",
+    "sqlite-modal[server,bench]",
     "pytest>=8.0",
     "ruff>=0.15.21",
     "ty>=0.0.59",

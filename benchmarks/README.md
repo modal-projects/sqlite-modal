@@ -2,7 +2,8 @@
 
 Adoption-oriented measurements against live Modal Servers. Answers whether
 `sqlite_modal` fits a workload: warm latency, cold start, exclusive-writer
-concurrency, multi-DB scale-out, bulk insert rate, and sync `flush` cost.
+concurrency (singleton Server), multi-DB scale-out, bulk insert rate, and sync
+`flush` cost.
 
 ## Run
 

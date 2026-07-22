@@ -1752,7 +1752,7 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-example = [
+bench = [
     { name = "matplotlib" },
 ]
 server = [
@@ -1764,7 +1764,7 @@ server = [
 dev = [
     { name = "pytest" },
     { name = "ruff" },
-    { name = "sqlite-modal", extra = ["example", "server"] },
+    { name = "sqlite-modal", extra = ["bench", "server"] },
     { name = "ty" },
 ]
 
@@ -1772,17 +1772,17 @@ dev = [
 requires-dist = [
     { name = "fastapi", extras = ["standard"], marker = "extra == 'server'", specifier = ">=0.139.0,<1" },
     { name = "httpx", specifier = ">=0.28.0,<1" },
-    { name = "matplotlib", marker = "extra == 'example'", specifier = ">=3.11.0,<4" },
+    { name = "matplotlib", marker = "extra == 'bench'", specifier = ">=3.11.0,<4" },
     { name = "modal", specifier = ">=1.5.2,<2" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.34.0,<1" },
 ]
-provides-extras = ["server", "example"]
+provides-extras = ["server", "bench"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.15.21" },
-    { name = "sqlite-modal", extras = ["server", "example"] },
+    { name = "sqlite-modal", extras = ["server", "bench"] },
     { name = "ty", specifier = ">=0.0.59" },
 ]
 

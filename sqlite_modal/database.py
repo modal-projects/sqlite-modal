@@ -1,4 +1,4 @@
-"""SQLite database entity — path + ``modal.Volume`` persistence."""
+"""Persistence — local sqlite3 + Volume durability."""
 
 from __future__ import annotations
 
@@ -14,52 +14,36 @@ SqlParam: TypeAlias = str | int | float | bool | None
 SqlParams: TypeAlias = Sequence[SqlParam]
 Row: TypeAlias = dict[str, SqlParam]
 
-VOLUME_MOUNT = Path("/data")
-DEFAULT_DB_PATH = VOLUME_MOUNT / "db.sqlite"
-
 
 class ExecuteResult(TypedDict):
-    """Result of a non-row-returning statement."""
-
     rowcount: int
     lastrowid: int
 
 
 class BatchOp(TypedDict):
-    """One step in ``Database.batch`` / ``Sqlite.batch``."""
-
     type: Literal["query", "execute"]
     sql: str
     params: NotRequired[list[SqlParam]]
     params_seq: NotRequired[list[list[SqlParam]]]
 
 
-class SqlRequest(TypedDict):
-    """Wire body for ``/v1/query`` and ``/v1/execute``."""
-
-    sql: str
-    params: list[SqlParam]
-
-
-class BatchRequest(TypedDict):
-    """Wire body for ``/v1/batch``."""
-
-    ops: list[BatchOp]
-
-
 class Database:
     """Local sqlite3 connection with durable storage via ``modal.Volume``."""
+
+    VOLUME_MOUNT = Path("/data")
+    DEFAULT_PATH = VOLUME_MOUNT / "db.sqlite"
+    MAX_BATCH_OPS = 1_000
+    MAX_PARAMS_SEQ = 10_000
 
     def __init__(self, conn: sqlite3.Connection, volume: modal.Volume) -> None:
         self.conn = conn
         self.volume = volume
         self._lock = threading.Lock()
+        self._closed = False
 
     @classmethod
     def from_path(cls, path: Path, volume: modal.Volume) -> Self:
-        """Open SQLite at ``path`` on ``volume`` (creates the file if absent)."""
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Autocommit: writes use explicit BEGIN/COMMIT; reads never leave a txn open.
         conn = sqlite3.connect(
             str(path),
             timeout=5.0,
@@ -111,13 +95,16 @@ class Database:
     def batch(
         self, ops: Sequence[BatchOp]
     ) -> list[ExecuteResult | dict[str, list[Row]]]:
-        """Run ops in one transaction (commit once; rollback on error)."""
+        if len(ops) > self.MAX_BATCH_OPS:
+            raise ValueError(f"batch exceeds {self.MAX_BATCH_OPS} ops")
+        writes = any(op["type"] == "execute" for op in ops)
         with self._lock:
             results: list[ExecuteResult | dict[str, list[Row]]] = []
             try:
-                self.conn.execute("BEGIN IMMEDIATE")
+                self.conn.execute("BEGIN IMMEDIATE" if writes else "BEGIN")
                 for op in ops:
-                    if op["type"] == "query":
+                    op_type = op["type"]
+                    if op_type == "query":
                         cur = self.conn.execute(
                             op["sql"], tuple(op.get("params", ()))
                         )
@@ -125,10 +112,16 @@ class Database:
                             {"rows": [dict(row) for row in cur.fetchall()]}
                         )
                         continue
-
+                    if op_type != "execute":
+                        raise ValueError(f"invalid batch op type {op_type!r}")
                     if "params_seq" in op:
+                        params_seq = op["params_seq"]
+                        if len(params_seq) > self.MAX_PARAMS_SEQ:
+                            raise ValueError(
+                                f"params_seq exceeds {self.MAX_PARAMS_SEQ} rows"
+                            )
                         cur = self.conn.executemany(
-                            op["sql"], [tuple(r) for r in op["params_seq"]]
+                            op["sql"], [tuple(r) for r in params_seq]
                         )
                     else:
                         cur = self.conn.execute(
@@ -153,12 +146,19 @@ class Database:
             pass
 
     def flush(self) -> None:
-        """Checkpoint WAL and ``volume.commit`` (sync durability barrier)."""
         with self._lock:
-            self.conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-            self.volume.commit()
+            self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        # Commit outside the SQL lock so other requests are not blocked on Volume I/O.
+        self.volume.commit()
 
-    def close(self) -> None:
+    def close(self, *, commit: bool = False) -> None:
         with self._lock:
-            self.conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-            self.conn.close()
+            if self._closed:
+                return
+            try:
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            finally:
+                self.conn.close()
+                self._closed = True
+        if commit:
+            self.volume.commit()

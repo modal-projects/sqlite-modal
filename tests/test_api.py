@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
 
@@ -129,8 +130,35 @@ def test_body_too_large(api_client: TestClient) -> None:
         content=b"{}",
         headers={
             "content-type": "application/json",
-            "content-length": str(api_mod.MAX_BODY_BYTES + 1),
+            "content-length": str(api_mod.SqlApi.MAX_BODY_BYTES + 1),
         },
+    )
+    assert r.status_code == 413
+    assert r.json()["error"] == "request body too large"
+
+
+def test_batch_invalid_type_is_400(api_client: TestClient) -> None:
+    r = api_client.post(
+        "/v1/batch",
+        json={
+            "ops": [
+                {
+                    "type": "drop",
+                    "sql": "SELECT 1",
+                    "params": [],
+                }
+            ]
+        },
+    )
+    assert r.status_code == 422  # Pydantic rejects unknown Literal
+
+
+def test_body_too_large_without_content_length(api_client: TestClient) -> None:
+    huge = b"x" * (api_mod.SqlApi.MAX_BODY_BYTES + 1)
+    r = api_client.post(
+        "/v1/execute",
+        content=huge,
+        headers={"content-type": "application/json"},
     )
     assert r.status_code == 413
     assert r.json()["error"] == "request body too large"
@@ -139,4 +167,28 @@ def test_body_too_large(api_client: TestClient) -> None:
 def test_flush(api_client: TestClient, volume: modal.Volume) -> None:
     r = api_client.post("/v1/flush", json={})
     assert r.status_code == 200
+    cast(MagicMock, volume.commit).assert_called()
+
+
+def test_lifespan_commit_on_shutdown(
+    temp_db_path: Path,
+    volume: modal.Volume,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SQLITE_MODAL_NAME", "test-db")
+
+    def fake_from_name(name: str) -> modal.Volume:
+        return volume
+
+    monkeypatch.setattr(api_mod.modal.Volume, "from_name", fake_from_name)
+    monkeypatch.setattr(api_mod.Database, "DEFAULT_PATH", temp_db_path)
+
+    with TestClient(api_mod.app) as client:
+        client.post(
+            "/v1/execute",
+            json={
+                "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)",
+                "params": [],
+            },
+        ).raise_for_status()
     cast(MagicMock, volume.commit).assert_called()

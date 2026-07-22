@@ -8,7 +8,11 @@ class SqliteError(Exception):
 
 
 class InvalidNameError(SqliteError):
-    """Invalid Sqlite name or attach argument."""
+    """Invalid Sqlite name (identifier regex)."""
+
+
+class ConfigError(SqliteError):
+    """Invalid client or attach configuration."""
 
 
 class NotAttachedError(SqliteError):
