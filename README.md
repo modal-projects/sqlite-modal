@@ -1,42 +1,23 @@
 # sqlite_modal
 
-Internal library: Turso Sync databases as named Modal resources
-(`Sqlite.from_name`), with local `turso.sync` clients and Volume-backed
-`server.db`.
+Named Turso Sync DBs on Modal. Local SQL via pyturso; `push` / `pull` to a
+Modal `tursodb` Server; Volume holds `server.db` on exit. Not Turso Cloud.
 
-## Overview
-
-Thin adapter over Modal Server + pyturso — not Turso Cloud, not a custom sync
-engine. Modal owns naming, hosting `tursodb --sync-server`, and cold storage.
-Turso owns `push` / `pull` / `checkpoint`. Use when you want embedded SQLite
-with sync between local files and a Modal-hosted remote.
-
-### Dependencies
-
-- **Upstream**: Modal (`Server`, `Volume`, `App.deploy`), pyturso /
-  `tursodb` (pinned in `sqlite_modal/turso.py`)
-- **Downstream**: Examples and benches in this repo; any app that imports
-  `sqlite_modal`
+```text
+local file  --push/pull-->  SyncServer (tursodb)
+                                |
+                         exit → Volume /data/{name}/
+```
 
 ## Setup
 
-### Prerequisites
-
-- Python ≥ 3.12
-- `uv`
-- Modal CLI logged in (`modal setup`) against a workspace that can deploy
-  Servers
-
-### Install
+Python 3.12+, `uv`, Modal logged in (`modal setup`).
 
 ```bash
-uv sync                 # library + runtime deps
-uv sync --group dev     # + pytest / ruff / ty
-uv sync --group bench   # + matplotlib for charts
+uv sync
+uv sync --group dev    # tests / lint
+uv sync --group bench  # charts
 ```
-
-No project env vars required. Modal auth comes from the CLI / token
-environment.
 
 ## Usage
 
@@ -46,10 +27,7 @@ from sqlite_modal import Sqlite
 db = Sqlite.from_name(
     "orders",
     create_if_missing=True,
-    create_options={
-        "max_containers": 1,  # one server.db — recommended
-        # any @app.server kwarg: compute_region, min_containers, …
-    },
+    create_options={"max_containers": 1},  # recommended
 )
 conn = db.connect("./orders.db")
 with conn:
@@ -60,98 +38,49 @@ with conn:
     conn.pull()
 ```
 
-| Need | API |
-|------|-----|
-| Create / lookup remote | `Sqlite.from_name(name, create_if_missing=, create_options=)` |
-| Sync URL | `db.url` |
-| Local connection | `db.connect(path)` → `ConnectionSync` (waits for non-503) |
-| Sync | `conn.push()` / `conn.pull()` / `conn.checkpoint()` |
+- `from_name` — create/lookup App `sqlite-modal-{name}` (`create_options` → `@app.server`)
+- `connect(path)` — local `ConnectionSync`; waits until the Server is up
+- Sync is explicit (`push` / `pull`). Conflicts are last-push-wins.
+- Prefer `max_containers=1`. Use `min_containers=1` if you don’t want cold starts.
 
-`create_if_missing=True` ensures Volume `sqlite-modal-data` and deploys App
-`sqlite-modal-{name}` with class `SyncServer`. Lookup-only `from_name` is
-lazy until `url` / `connect`. No auto-sync on close. Conflicts are **last
-push wins**.
-
-## Architecture
-
-```text
-  client local file  --push/pull-->  tursodb (Modal SyncServer)
-                                           |
-                                    @modal.exit: stop + copy
-                                           v
-                                    Volume /data/{name}/server.db*
-```
-
-| Path | Purpose |
-|------|---------|
-| `sqlite_modal/database.py` | `Sqlite` handle |
-| `sqlite_modal/remote.py` | `SyncServer`, `ServerStore`, `RemoteApp.deploy`, `CreateOptions` |
-| `sqlite_modal/turso.py` | Version pins, Image, constants |
-| `sqlite_modal/exceptions.py` | `SqliteError` hierarchy |
-| `examples/` | Smoke apps |
-| `benchmarks/` | Latency + throughput suite → JSON + `docs/charts/` |
-
-## Runbooks
-
-### Smoke
+## Commands
 
 ```bash
 uv run python examples/notes/app.py
 uv run python examples/multi/app.py
-```
 
-### Tests / lint
-
-```bash
 uv run pytest
 uv run ruff check sqlite_modal examples benchmarks tests
 uv run ty check sqlite_modal examples benchmarks tests
+
+uv run python benchmarks/app.py --create-remotes  # once
+uv run python benchmarks/app.py
+uv run python benchmarks/app.py --cold            # optional
 ```
 
-### Benchmarks
+Details: [benchmarks/README.md](benchmarks/README.md).
 
-```bash
-uv run python benchmarks/app.py --create-remotes   # once (bench + bench_cold)
-uv run python benchmarks/app.py                    # latency + throughput + sync
-uv run python benchmarks/app.py --cold             # optional cold start
-```
+## Layout
 
-See [benchmarks/README.md](benchmarks/README.md). JSON →
-`benchmarks/results/latest.json` (gitignored); charts →
-`docs/charts/latency.png`, `throughput.png`.
+| Path | Role |
+|------|------|
+| `sqlite_modal/database.py` | `Sqlite` |
+| `sqlite_modal/remote.py` | `SyncServer`, deploy, `CreateOptions` |
+| `sqlite_modal/turso.py` | pins + Image |
+| `examples/`, `benchmarks/` | smoke + benches |
 
-### Redeploy a named DB
+## Benchmarks
 
-```python
-Sqlite.from_name("orders", create_if_missing=True, create_options={...})
-```
+`uk` / `eu-west`, warm `bench` (`min_containers=1`):
 
-Re-running with `create_if_missing=True` redeploys the App (picks up Image /
-`SyncServer` changes). After renaming the Server class, recreate remotes
-(benches: `--create-remotes`).
-
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `MissingError` on `from_name` | App / Server not deployed | `create_if_missing=True` or `--create-remotes` |
-| `connect` hangs / `TimeoutError` | Scale-to-zero 503s, or wrong Server name | Wait, or set `min_containers=1`; recreate after `SyncServer` renames |
-| Data missing after scale-down | Volume save is exit-only | Expect restore on next cold start; don’t treat every `push` as Volume durable |
-| Concurrent writers disagree | Last push wins | One writer per name, or shard across names |
-| `ty` can’t resolve matplotlib | Bench extra not installed | `uv sync --group bench` (CI syncs both `dev` and `bench`) |
-
-## Benchmark snapshot
-
-Recent `uk` / `eu-west` run (`bench` with `min_containers=1`):
-
-| Metric | Value |
-|--------|-------|
-| Local read p50 / p95 | ~0.01 ms / ~0.02 ms |
-| Local write (commit) p50 / p95 | ~0.09 ms / ~0.12 ms |
-| Local read throughput | ~121k ops/s |
-| Local write throughput | ~9.3k ops/s |
+| | |
+|--|--|
+| Local read / write p50 | ~0.01 ms / ~0.09 ms |
+| Local read / write ops/s | ~121k / ~9.3k |
 | Warm push / pull p50 | ~158 ms / ~79 ms |
 
 ![Local latency](docs/charts/latency.png)
+
+![Sync latency](docs/charts/sync_latency.png)
 
 ![Local throughput](docs/charts/throughput.png)

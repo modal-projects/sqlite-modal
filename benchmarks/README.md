@@ -20,7 +20,7 @@ uv run python benchmarks/app.py --n 50 --ops 500
 | Artifact | Location |
 |----------|----------|
 | JSON | `benchmarks/results/latest.json` (gitignored) |
-| Charts | `docs/charts/latency.png`, `throughput.png` |
+| Charts | `docs/charts/latency.png`, `sync_latency.png`, `throughput.png` |
 
 ## Scenarios
 
@@ -28,7 +28,7 @@ uv run python benchmarks/app.py --n 50 --ops 500
 |----------|----------|
 | `local_latency` | Local `SELECT` / `INSERT+commit` p50/p95? |
 | `local_throughput` | Sustained local read / write ops/s? |
-| `sync_latency` | Warm `push` / `pull` p50? (table only) |
+| `sync_latency` | Warm `push` / `pull` p50? (chart + table) |
 | `cold_start` | First connect+push after scale-to-zero? (`--cold`) |
 
 ## Remotes

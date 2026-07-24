@@ -10,6 +10,8 @@ CHARTS_DIR = Path(__file__).resolve().parent.parent / "docs" / "charts"
 
 _BLUE = "#1f6feb"
 _GREEN = "#2f9e44"
+_ORANGE = "#e8590c"
+_PURPLE = "#9c36b5"
 
 STALE_CHARTS = (
     "warm_latency.png",
@@ -51,6 +53,7 @@ def render_charts(report: BenchReport, out_dir: Path | None = None) -> list[Path
 
     lat = report["local_latency"]
     thr = report["local_throughput"]
+    sync = report["sync_latency"]
 
     fig, ax = plt.subplots(figsize=(7.0, 4.2), constrained_layout=True)
     labels = ["Read", "Write\n(commit)"]
@@ -60,6 +63,15 @@ def render_charts(report: BenchReport, out_dir: Path | None = None) -> list[Path
     ax.set_title("Local SQL latency")
     label_bars(ax, bars, values, "{:.2f}")
     save(fig, "latency.png")
+
+    fig, ax = plt.subplots(figsize=(7.0, 4.2), constrained_layout=True)
+    labels = ["Push", "Pull"]
+    values = [sync["push_ms"]["p50"], sync["pull_ms"]["p50"]]
+    bars = ax.bar(labels, values, color=[_ORANGE, _PURPLE])
+    ax.set_ylabel("p50 (ms)")
+    ax.set_title("Warm sync latency (Modal Server)")
+    label_bars(ax, bars, values, "{:.0f}")
+    save(fig, "sync_latency.png")
 
     fig, ax = plt.subplots(figsize=(7.0, 4.2), constrained_layout=True)
     labels = ["Read", "Write\n(commit)"]
