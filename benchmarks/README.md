@@ -23,16 +23,16 @@ uv run python benchmarks/app.py --n 20 --ops-per-client 40
 | JSON | `benchmarks/results/latest.json` (gitignored) |
 | Charts | `docs/charts/*.png` |
 
-Cold start waits for scale-to-zero (~35s) then measures HTTP readiness +
-connect + schema + push. Use `--skip-cold` for a faster loop.
+Cold start waits for scale-to-zero (~35s) then measures `connect` + schema +
+push (`connect` blocks until the Server is ready). Use `--skip-cold` for a
+faster loop.
 
 ## Layout
 
 | Module | Role |
 |--------|------|
-| `replica.py` | `LocalReplica` — path lifecycle, Modal Server readiness, schema |
 | `measure.py` | `Samples` — ms timings and p50/p95/mean |
-| `scenarios.py` | Adoption scenarios over `LocalReplica` |
+| `scenarios.py` | Adoption scenarios via `Sqlite.connect` |
 | `remotes.py` | Create options + `resolve(..., create=)` |
 | `app.py` | CLI |
 | `report.py` / `charts.py` | JSON + product charts |

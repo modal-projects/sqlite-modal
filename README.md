@@ -28,29 +28,28 @@ db = Sqlite.from_name(
         # any @app.server kwarg: compute_region, min_containers, …
     },
 )
-conn = db.connect("./orders.db")
-conn.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")
-conn.execute("INSERT INTO t VALUES (?)", ("a",))
-conn.commit()
-conn.push()
-conn.pull()
-conn.close()
+with db.connect("./orders.db") as conn:
+    conn.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")
+    conn.execute("INSERT INTO t VALUES (?)", ("a",))
+    conn.commit()
+    conn.push()
+    conn.pull()
 ```
 
 | Turso | This library |
 |-------|----------------|
-| Remote URL | `Sqlite.from_name("orders")` |
+| Remote URL | `Sqlite.from_name("orders")` → `db.url` |
 | Auth token | None (`unauthenticated` Server) |
-| `turso.sync.connect(path, remote_url=…)` | `db.connect(path)` |
+| `turso.sync.connect(path, remote_url=…)` | `db.connect(path)` (waits for Server) |
 | `push` / `pull` / `checkpoint` | Unchanged on `conn` |
 
 `create_if_missing=True` creates the shared data Volume and deploys the
 Server App (`sqlite-modal-{name}`). Lookup-only `from_name("orders")` is lazy
-until `remote_url` / `connect`. Prefer one long-lived connection; call
+until `url` / `connect`. Prefer one long-lived connection; call
 `push` / `pull` when needed.
 
-Servers return **503** when scaled to zero — set `min_containers` in
-`create_options` if you want a warm pool.
+`connect` blocks until the Server answers (scale-from-zero may take a few
+seconds). Set `min_containers` in `create_options` if you want a warm pool.
 
 No auto-sync on close. Conflicts are **last push wins**
 ([docs](https://docs.turso.tech/sync/conflict-resolution)).
@@ -60,8 +59,8 @@ No auto-sync on close. Conflicts are **last push wins**
 ```text
 sqlite_modal/
   database.py   # Sqlite handle
-  remote.py     # @app.server factory (used by from_name)
-  turso.py      # pins + Image + app_name()
+  remote.py     # SyncServer + deploy (used by from_name)
+  turso.py      # pins + Image
   exceptions.py
 ```
 

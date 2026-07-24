@@ -1,15 +1,15 @@
-"""Unit tests for Remote / ServerStore."""
+"""Unit tests for SyncServer / ServerStore."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from sqlite_modal.remote import Remote, ServerStore
+from sqlite_modal.remote import ServerStore, SyncServer
 
 
-def test_remote_is_module_level() -> None:
-    assert Remote.__module__ == "sqlite_modal.remote"
-    assert Remote.__name__ == "Remote"
+def test_sync_server_is_module_level() -> None:
+    assert SyncServer.__module__ == "sqlite_modal.remote"
+    assert SyncServer.__name__ == "SyncServer"
 
 
 def test_server_store_restore(tmp_path: Path) -> None:

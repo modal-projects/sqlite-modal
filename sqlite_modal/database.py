@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import re
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import modal
@@ -14,6 +17,8 @@ from sqlite_modal.remote import CreateOptions, RemoteApp
 from sqlite_modal.turso import APP_PREFIX, REMOTE_NAME, VOLUME_NAME
 
 NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,127}$")
+READY_TIMEOUT_S = 120.0
+READY_POLL_S = 0.5
 
 
 class Sqlite:
@@ -23,6 +28,9 @@ class Sqlite:
     ``tursodb`` sync Server::
 
         db = Sqlite.from_name("orders", create_if_missing=True, create_options={...})
+        with db.connect("./orders.db") as conn:
+            conn.execute("...")
+            conn.push()
     """
 
     def __init__(
@@ -41,7 +49,7 @@ class Sqlite:
         self.environment_name = environment_name
         self.client = client
         self.server: modal.Server | None = None
-        self.url: str | None = None
+        self.resolved_url: str | None = None
 
     def __repr__(self) -> str:
         return f"Sqlite(name={self.name!r})"
@@ -87,10 +95,10 @@ class Sqlite:
         return db
 
     @property
-    def remote_url(self) -> str:
+    def url(self) -> str:
         """Bare sync URL for ``turso.sync.connect(..., remote_url=...)``."""
-        if self.url is not None:
-            return self.url
+        if self.resolved_url is not None:
+            return self.resolved_url
         try:
             base = self.resolve_server().get_url()
         except NotFoundError as exc:
@@ -105,15 +113,39 @@ class Sqlite:
                 f"create with Sqlite.from_name({self.name!r}, "
                 f"create_if_missing=True)"
             )
-        self.url = base.rstrip("/")
-        return self.url
+        self.resolved_url = base.rstrip("/")
+        return self.resolved_url
 
-    def connect(self, path: str | Path) -> ConnectionSync:
-        """``turso.sync.connect(path, remote_url=self.remote_url)``."""
+    def connect(
+        self,
+        path: str | Path,
+        *,
+        timeout_s: float = READY_TIMEOUT_S,
+    ) -> ConnectionSync:
+        """Open a local sync DB once the Modal Server is accepting traffic."""
         path_str = str(path)
         if not path_str:
             raise ValueError("connect() requires a non-empty local path")
-        return connect(path_str, remote_url=self.remote_url)
+
+        url = self.url
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            try:
+                urllib.request.urlopen(url, timeout=2.0)
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code != 503:
+                    break
+            except urllib.error.URLError:
+                pass
+            time.sleep(READY_POLL_S)
+        else:
+            raise TimeoutError(
+                f"Sqlite {self.name!r} Server not ready within "
+                f"{timeout_s:.0f}s at {url}"
+            )
+
+        return connect(path_str, remote_url=url)
 
     def resolve_server(self) -> modal.Server:
         if self.server is None:

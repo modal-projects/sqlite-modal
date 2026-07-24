@@ -20,8 +20,7 @@ def main() -> None:
         create_if_missing=True,
         create_options={"max_containers": 1},
     )
-    conn = db.connect(LOCAL_DB)
-    with conn:
+    with db.connect(LOCAL_DB) as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT)"
         )

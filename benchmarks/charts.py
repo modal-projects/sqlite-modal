@@ -14,9 +14,7 @@ _GREEN = "#2f9e44"
 _GRAY = "#868e96"
 
 
-def render_charts(
-    report: BenchReport, out_dir: Path | None = None
-) -> list[Path]:
+def render_charts(report: BenchReport, out_dir: Path | None = None) -> list[Path]:
     import matplotlib
 
     matplotlib.use("Agg")

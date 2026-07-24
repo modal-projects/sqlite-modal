@@ -8,9 +8,36 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TypedDict
 
+from turso.sync import ConnectionSync
+
 from benchmarks.measure import LatencyMs, Samples
-from benchmarks.replica import NOTE_DDL, LocalReplica
 from sqlite_modal import Sqlite
+
+NOTE_DDL = (
+    "CREATE TABLE IF NOT EXISTS note (id INTEGER PRIMARY KEY, body TEXT NOT NULL)"
+)
+
+
+class NoteTable:
+    """Bench-only schema for the ``note`` table."""
+
+    def reset(self, conn: ConnectionSync) -> None:
+        conn.execute(NOTE_DDL)
+        conn.execute("DELETE FROM note")
+        conn.commit()
+
+
+class LocalFiles:
+    """Bench-only local path hygiene."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def clear(self) -> None:
+        parent = self.path.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        for p in parent.glob(f"{self.path.name}*"):
+            p.unlink()
 
 
 class WarmLatencyResult(TypedDict):
@@ -75,13 +102,17 @@ class PushCostResult(TypedDict):
 def warm_latency(
     remote: Sqlite, local: Path, *, n: int, warmup: int
 ) -> WarmLatencyResult:
-    replica = LocalReplica(remote, local)
-    conn = replica.bootstrap()
+    files = LocalFiles(local)
+    notes = NoteTable()
+    files.clear()
+    conn = remote.connect(local)
     reads = Samples()
     writes = Samples()
     pushes = Samples()
     pulls = Samples()
     with conn:
+        notes.reset(conn)
+        conn.push()
         for _ in range(warmup):
             conn.execute("SELECT 1")
             conn.execute("INSERT INTO note (body) VALUES (?)", ("warmup",))
@@ -95,9 +126,7 @@ def warm_latency(
             reads.add((time.perf_counter() - t0) * 1000)
 
             t0 = time.perf_counter()
-            conn.execute(
-                "INSERT INTO note (body) VALUES (?)", (f"warm-{i}",)
-            )
+            conn.execute("INSERT INTO note (body) VALUES (?)", (f"warm-{i}",))
             conn.commit()
             writes.add((time.perf_counter() - t0) * 1000)
 
@@ -121,30 +150,32 @@ def cold_start(
     scaledown_wait_s: float,
     warm_n: int = 20,
 ) -> ColdStartResult:
-    """Cold = wait_ready + connect + schema + push after scale-to-zero.
+    """Cold = connect + schema + push after scale-to-zero.
 
     Warm the remote once, idle past ``scaledown_window``, then measure the
-    first successful sync path (HTTP readiness included).
+    first successful sync path (``connect`` includes Server readiness).
     """
-    replica = LocalReplica(remote, local)
-    conn = replica.bootstrap()
-    conn.close()
+    files = LocalFiles(local)
+    notes = NoteTable()
+    files.clear()
+    conn = remote.connect(local)
+    with conn:
+        notes.reset(conn)
+        conn.push()
 
     time.sleep(scaledown_wait_s)
 
-    replica.clear()
+    files.clear()
     t0 = time.perf_counter()
-    conn = replica.open()
+    conn = remote.connect(local)
     with conn:
-        replica.reset_schema(conn)
+        notes.reset(conn)
         conn.push()
         cold_ms = (time.perf_counter() - t0) * 1000
 
         warm = Samples()
         for i in range(warm_n):
-            conn.execute(
-                "INSERT INTO note (body) VALUES (?)", (f"warm-{i}",)
-            )
+            conn.execute("INSERT INTO note (body) VALUES (?)", (f"warm-{i}",))
             conn.commit()
             warm.measure(conn.push)
 
@@ -155,8 +186,8 @@ def cold_start(
         "warm_n": warm_n,
         "scaledown_wait_s": scaledown_wait_s,
         "note": (
-            "cold includes Modal container bring-up (HTTP until non-503) "
-            "+ connect + schema + push"
+            "cold includes Modal container bring-up (connect waits for "
+            "non-503) + schema + push"
         ),
     }
 
@@ -170,19 +201,21 @@ def writer_concurrency(
 ) -> WriterConcurrencyResult:
     """Concurrent local writers each pushing to one remote (last-push-wins)."""
     workdir.mkdir(parents=True, exist_ok=True)
-    boot = LocalReplica(remote, workdir / "concurrency_boot.db")
-    conn = boot.bootstrap()
-    conn.close()
+    notes = NoteTable()
+    boot_path = workdir / "concurrency_boot.db"
+    LocalFiles(boot_path).clear()
+    conn = remote.connect(boot_path)
+    with conn:
+        notes.reset(conn)
+        conn.push()
 
     points: list[ConcurrencyPoint] = []
     for n_clients in clients:
 
         def worker(client_id: int) -> list[float]:
-            replica = LocalReplica(
-                remote, workdir / f"concurrency_c{client_id}.db"
-            )
-            replica.clear()
-            c = replica.open()
+            path = workdir / f"concurrency_c{client_id}.db"
+            LocalFiles(path).clear()
+            c = remote.connect(path)
             samples = Samples()
             with c:
                 c.execute(NOTE_DDL)
@@ -232,11 +265,14 @@ def multi_db_parallel(
 ) -> MultiDbParallelResult:
     """Sequential push-writes on one DB vs two remotes in parallel."""
     workdir.mkdir(parents=True, exist_ok=True)
+    notes = NoteTable()
 
     def write_many(remote: Sqlite, path: Path, prefix: str) -> float:
-        replica = LocalReplica(remote, path)
-        conn = replica.bootstrap()
+        LocalFiles(path).clear()
+        conn = remote.connect(path)
         with conn:
+            notes.reset(conn)
+            conn.push()
             t1 = time.perf_counter()
             for i in range(ops_per_db):
                 conn.execute(
@@ -277,10 +313,14 @@ def batch_size_sweep(
     *,
     sizes: tuple[int, ...] = (10, 100, 1000),
 ) -> BatchSizeSweepResult:
-    replica = LocalReplica(remote, local)
-    conn = replica.bootstrap()
+    files = LocalFiles(local)
+    notes = NoteTable()
+    files.clear()
+    conn = remote.connect(local)
     points: list[BatchSizePoint] = []
     with conn:
+        notes.reset(conn)
+        conn.push()
         for size in sizes:
             conn.execute("DELETE FROM note")
             conn.commit()
@@ -303,23 +343,23 @@ def batch_size_sweep(
 
 
 def push_cost(remote: Sqlite, local: Path, *, n: int) -> PushCostResult:
-    replica = LocalReplica(remote, local)
-    conn = replica.bootstrap()
+    files = LocalFiles(local)
+    notes = NoteTable()
+    files.clear()
+    conn = remote.connect(local)
     insert_only = Samples()
     insert_push = Samples()
     with conn:
+        notes.reset(conn)
+        conn.push()
         for i in range(n):
             t0 = time.perf_counter()
-            conn.execute(
-                "INSERT INTO note (body) VALUES (?)", (f"io-{i}",)
-            )
+            conn.execute("INSERT INTO note (body) VALUES (?)", (f"io-{i}",))
             conn.commit()
             insert_only.add((time.perf_counter() - t0) * 1000)
 
             t0 = time.perf_counter()
-            conn.execute(
-                "INSERT INTO note (body) VALUES (?)", (f"ip-{i}",)
-            )
+            conn.execute("INSERT INTO note (body) VALUES (?)", (f"ip-{i}",))
             conn.commit()
             conn.push()
             insert_push.add((time.perf_counter() - t0) * 1000)

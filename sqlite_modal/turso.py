@@ -13,7 +13,7 @@ HOT_DB_PATH = "/tmp/server.db"
 VOLUME_MOUNT = "/data"
 VOLUME_NAME = "sqlite-modal-data"
 APP_PREFIX = "sqlite-modal"
-REMOTE_NAME = "Remote"
+REMOTE_NAME = "SyncServer"
 SYNC_PORT_ENV = "SQLITE_MODAL_SYNC_PORT"
 DB_NAME_ENV = "SQLITE_MODAL_NAME"
 

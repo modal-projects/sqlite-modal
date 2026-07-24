@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -75,7 +76,7 @@ def test_connect_rejects_empty_path(monkeypatch: pytest.MonkeyPatch) -> None:
         db.connect("")
 
 
-def test_remote_url_is_bare(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_url_is_bare(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(Sqlite, "exists", lambda self: True)
     server = MagicMock()
     server.get_url.return_value = "https://tunnel.example/"
@@ -89,15 +90,15 @@ def test_remote_url_is_bare(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(database_mod.modal.Server, "from_name", fake_from_name)
 
     db = Sqlite.from_name("orders")
-    assert db.remote_url == "https://tunnel.example"
-    assert "?" not in db.remote_url
+    assert db.url == "https://tunnel.example"
+    assert "?" not in db.url
     assert seen["app"] == f"{APP_PREFIX}-orders"
     assert seen["name"] == REMOTE_NAME
-    assert db.remote_url == "https://tunnel.example"
+    assert db.url == "https://tunnel.example"
     server.get_url.assert_called_once()
 
 
-def test_connect_uses_remote_url(
+def test_connect_waits_then_opens(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(Sqlite, "exists", lambda self: True)
@@ -105,6 +106,13 @@ def test_connect_uses_remote_url(
     server = MagicMock()
     server.get_url.return_value = "https://tunnel.example"
     seen: dict[str, str | None] = {}
+    probes = {"n": 0}
+
+    def fake_urlopen(url: str, timeout: float = 0) -> MagicMock:
+        probes["n"] += 1
+        if probes["n"] < 3:
+            raise urllib.error.HTTPError(url, 503, "Unavailable", MagicMock(), None)
+        raise urllib.error.HTTPError(url, 404, "Not Found", MagicMock(), None)
 
     def fake_connect(path: str, remote_url: str | None = None) -> MagicMock:
         seen["path"] = path
@@ -116,14 +124,43 @@ def test_connect_uses_remote_url(
         "from_name",
         lambda *a, **k: server,
     )
+    monkeypatch.setattr(database_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(database_mod.time, "sleep", lambda _s: None)
     monkeypatch.setattr(database_mod, "connect", fake_connect)
 
     db = Sqlite.from_name("orders")
     assert db.connect(tmp_path / "local.db") is fake_conn
     assert seen["remote_url"] == "https://tunnel.example"
+    assert probes["n"] == 3
 
 
-def test_remote_url_requires_create(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_connect_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(Sqlite, "exists", lambda self: True)
+    server = MagicMock()
+    server.get_url.return_value = "https://tunnel.example"
+
+    def always_503(url: str, timeout: float = 0) -> MagicMock:
+        raise urllib.error.HTTPError(url, 503, "Unavailable", MagicMock(), None)
+
+    monkeypatch.setattr(
+        database_mod.modal.Server,
+        "from_name",
+        lambda *a, **k: server,
+    )
+    monkeypatch.setattr(database_mod.urllib.request, "urlopen", always_503)
+    monkeypatch.setattr(database_mod.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        database_mod.time,
+        "monotonic",
+        iter([0.0, 0.0, 200.0]).__next__,
+    )
+
+    db = Sqlite.from_name("orders")
+    with pytest.raises(TimeoutError, match="not ready"):
+        db.connect(tmp_path / "local.db", timeout_s=1.0)
+
+
+def test_url_requires_create(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(Sqlite, "exists", lambda self: True)
     server = MagicMock()
     server.get_url.return_value = None
@@ -134,4 +171,4 @@ def test_remote_url_requires_create(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     with pytest.raises(RuntimeError, match="create_if_missing=True"):
-        _ = Sqlite.from_name("orders").remote_url
+        _ = Sqlite.from_name("orders").url

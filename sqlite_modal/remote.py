@@ -86,7 +86,7 @@ class ServerStore:
             shutil.copy2(src, self.cold_dir / src.name)
 
 
-class Remote:
+class SyncServer:
     """Module-level ``tursodb --sync-server`` lifecycle for ``@app.server``."""
 
     proc: subprocess.Popen[bytes] | None
@@ -135,9 +135,7 @@ class Remote:
             if self.proc.poll() is not None:
                 raise RuntimeError(f"tursodb exited: {self.stderr_text()}")
             try:
-                with socket.create_connection(
-                    ("127.0.0.1", self.port), timeout=0.2
-                ):
+                with socket.create_connection(("127.0.0.1", self.port), timeout=0.2):
                     return
             except OSError:
                 time.sleep(0.1)
@@ -166,7 +164,7 @@ class Remote:
 
 
 class RemoteApp:
-    """Deploys ``sqlite-modal-{name}`` wrapping module-level ``Remote``."""
+    """Deploys ``sqlite-modal-{name}`` wrapping module-level ``SyncServer``."""
 
     @classmethod
     def deploy(
@@ -222,7 +220,7 @@ class RemoteApp:
             i6pn=opts.get("i6pn"),
             enable_memory_snapshot=opts.get("enable_memory_snapshot", False),
             experimental_options=opts.get("experimental_options"),
-        )(Remote)
+        )(SyncServer)
         with modal.enable_output():
             app.deploy(environment_name=environment_name, client=client)
         return app

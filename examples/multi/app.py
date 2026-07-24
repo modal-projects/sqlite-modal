@@ -21,19 +21,15 @@ def main() -> None:
             create_if_missing=True,
             create_options={"max_containers": 1},
         )
-        conn = db.connect(HERE / f".{name}.db")
-        with conn:
+        with db.connect(HERE / f".{name}.db") as conn:
             conn.execute(
-                "CREATE TABLE IF NOT EXISTS items "
-                "(id INTEGER PRIMARY KEY, body TEXT)"
+                "CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, body TEXT)"
             )
             conn.execute("INSERT INTO items (body) VALUES (?)", (body,))
             conn.commit()
             conn.push()
             conn.pull()
-            rows = conn.execute(
-                "SELECT id, body FROM items ORDER BY id"
-            ).fetchall()
+            rows = conn.execute("SELECT id, body FROM items ORDER BY id").fetchall()
             print(name, rows)
 
 

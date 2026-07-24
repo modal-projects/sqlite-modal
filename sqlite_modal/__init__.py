@@ -1,6 +1,6 @@
 """Turso Sync on Modal.
 
-Public API: ``Sqlite`` (``from_name`` / ``connect`` / ``remote_url``),
+Public API: ``Sqlite`` (``from_name`` / ``connect`` / ``url``),
 ``CreateOptions``, and exception types.
 """
 

@@ -56,9 +56,7 @@ def main(
     bench_db = resolve("bench", create=create_remotes, options=WARM_OPTIONS)
     bench_a = resolve("bench_a", create=create_remotes, options=WARM_OPTIONS)
     bench_b = resolve("bench_b", create=create_remotes, options=WARM_OPTIONS)
-    bench_cold = resolve(
-        COLD_NAME, create=create_remotes, options=COLD_OPTIONS
-    )
+    bench_cold = resolve(COLD_NAME, create=create_remotes, options=COLD_OPTIONS)
 
     cold = None
     if not skip_cold:
@@ -75,9 +73,7 @@ def main(
     report = build_report(
         region=REGION,
         routing_region=ROUTING_REGION,
-        warm_latency=warm_latency(
-            bench_db, WORKDIR / "warm.db", n=n, warmup=warmup
-        ),
+        warm_latency=warm_latency(bench_db, WORKDIR / "warm.db", n=n, warmup=warmup),
         cold_start=cold,
         writer_concurrency=writer_concurrency(
             bench_db, WORKDIR / "concurrency", ops_per_client=ops_per_client
