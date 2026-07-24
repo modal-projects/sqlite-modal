@@ -1,20 +1,21 @@
 # Benchmarks
 
-Adoption-oriented measurements against live Modal Servers. Answers whether
-`sqlite_modal` fits a workload: warm latency, cold start, exclusive-writer
-concurrency (singleton Server), multi-DB scale-out, bulk insert rate, and sync
-`flush` cost.
+Adoption measurements against Turso Sync remotes on Modal: local SQL +
+`push`/`pull`, cold start after scale-to-zero, concurrent pushers, multi-DB
+scale-out, bulk insert+push, and push cost vs local commit.
 
 ## Run
 
 ```bash
-uv sync
-export MODAL_PROXY_TOKEN_ID=wk-…
-export MODAL_PROXY_TOKEN_SECRET=ws-…
+uv sync --group bench
 
-uv run modal run benchmarks/app.py
-uv run modal run benchmarks/app.py --n 20 --skip-cold
-uv run modal run benchmarks/app.py --ops-per-client 40 --ops-per-db 80
+# once: deploy the four bench remotes with the intended autoscaler options
+uv run python benchmarks/app.py --create-remotes --skip-cold
+
+# subsequent runs: lookup only (no redeploy)
+uv run python benchmarks/app.py --skip-cold
+uv run python benchmarks/app.py
+uv run python benchmarks/app.py --n 20 --ops-per-client 40
 ```
 
 | Artifact | Location |
@@ -22,33 +23,37 @@ uv run modal run benchmarks/app.py --ops-per-client 40 --ops-per-db 80
 | JSON | `benchmarks/results/latest.json` (gitignored) |
 | Charts | `docs/charts/*.png` |
 
-Cold start waits for scale-to-zero (~35s). Use `--skip-cold` for a faster loop.
+Cold start waits for scale-to-zero (~35s) then measures `connect` + schema +
+push (`connect` blocks until the Server is ready). Use `--skip-cold` for a
+faster loop.
+
+## Layout
+
+| Module | Role |
+|--------|------|
+| `measure.py` | `Samples` — ms timings and p50/p95/mean |
+| `scenarios.py` | Adoption scenarios via `Sqlite.connect` |
+| `remotes.py` | Create options + `resolve(..., create=)` |
+| `app.py` | CLI |
+| `report.py` / `charts.py` | JSON + product charts |
 
 ## Scenarios → questions
 
 | Scenario | Adoption question |
 |----------|-------------------|
-| `warm_latency` | What read/write p50/p95 do I get when warm? |
+| `warm_latency` | Local read/write and warm push/pull p50/p95? |
 | `cold_start` | What do I pay for scale-to-zero? |
-| `writer_concurrency` | What happens with many clients on one DB? |
-| `multi_db_parallel` | How do I get more write throughput? |
-| `batch_size_sweep` | When is bulk (`executemany`) cheap? |
-| `flush_cost` | What does sync durability cost? |
+| `writer_concurrency` | Many clients pushing one remote (last-push-wins)? |
+| `multi_db_parallel` | More write throughput via more named DBs? |
+| `batch_size_sweep` | When is bulk `executemany` + one push cheap? |
+| `push_cost` | What does sync push add over local commit? |
 
-## Charts
+## Remotes
 
-| File | Measures |
-|------|----------|
-| `writer_concurrency.png` | Ops/s and p50 latency vs concurrent clients on one DB |
-| `multi_db_scaleout.png` | 1 DB write rate vs 2 DBs combined |
-| `cold_vs_warm.png` | Cold first-request ms vs warm p50 |
-
-Batch sizes and flush land in the README characteristics table, not separate charts.
-
-## Wiring
-
-| Attach | Role |
-|--------|------|
-| `bench` | Warm DB (`min_containers=1`) for latency, concurrency, batch, flush |
-| `bench_cold` | Scale-to-zero DB (`min_containers=0`) for cold start |
+| Name | Role |
+|------|------|
+| `bench` | Warm (`min_containers=1`) |
+| `bench_cold` | Scale-to-zero (`min_containers=0`) |
 | `bench_a` / `bench_b` | Parallel writers for multi-DB scale-out |
+
+Re-run with `--create-remotes` after changing options in `remotes.py`.

@@ -10,8 +10,8 @@ from typing import TypedDict
 from benchmarks.scenarios import (
     BatchSizeSweepResult,
     ColdStartResult,
-    FlushCostResult,
     MultiDbParallelResult,
+    PushCostResult,
     WarmLatencyResult,
     WriterConcurrencyResult,
 )
@@ -22,39 +22,39 @@ RESULTS_DIR = Path(__file__).resolve().parent / "results"
 class BenchMeta(TypedDict):
     timestamp: str
     region: str
-    cloud: str
+    routing_region: str
     note: str
 
 
 class BenchReport(TypedDict):
     meta: BenchMeta
     warm_latency: WarmLatencyResult
-    cold_start: ColdStartResult
+    cold_start: ColdStartResult | None
     writer_concurrency: WriterConcurrencyResult
     multi_db_parallel: MultiDbParallelResult
     batch_size_sweep: BatchSizeSweepResult
-    flush_cost: FlushCostResult
+    push_cost: PushCostResult
 
 
 def build_report(
     *,
     region: str,
-    cloud: str,
+    routing_region: str,
     warm_latency: WarmLatencyResult,
-    cold_start: ColdStartResult,
+    cold_start: ColdStartResult | None,
     writer_concurrency: WriterConcurrencyResult,
     multi_db_parallel: MultiDbParallelResult,
     batch_size_sweep: BatchSizeSweepResult,
-    flush_cost: FlushCostResult,
+    push_cost: PushCostResult,
 ) -> BenchReport:
     return {
         "meta": {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "region": region,
-            "cloud": cloud,
+            "routing_region": routing_region,
             "note": (
-                "Adoption suite: warm latency, cold start, exclusive-writer "
-                "concurrency, multi-DB scale-out, batch, flush"
+                "Turso Sync on Modal: local SQL + push/pull, cold start, "
+                "writer concurrency, multi-DB scale-out, batch, push cost"
             ),
         },
         "warm_latency": warm_latency,
@@ -62,7 +62,7 @@ def build_report(
         "writer_concurrency": writer_concurrency,
         "multi_db_parallel": multi_db_parallel,
         "batch_size_sweep": batch_size_sweep,
-        "flush_cost": flush_cost,
+        "push_cost": push_cost,
     }
 
 

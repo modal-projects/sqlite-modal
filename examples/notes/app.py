@@ -1,45 +1,38 @@
-# ---
-# cmd: ["modal", "serve", "examples/notes/app.py"]
-# deploy: true
-# ---
-#
-# Demo: single Sqlite (from_name → attach → SQL).
-# Requires MODAL_PROXY_TOKEN_ID / MODAL_PROXY_TOKEN_SECRET
-# (RBAC: modal workspace proxy-tokens allow <id> main).
+"""Notes smoke: Turso Sync on Modal.
+
+```bash
+uv run python examples/notes/app.py
+```
+"""
 
 from __future__ import annotations
 
-import os
+from pathlib import Path
 
-import modal
-
-from examples.notes.schema import NOTE_DDL
 from sqlite_modal import Sqlite
 
-REGION = os.environ.get("SQLITE_MODAL_REGION", "eu-west")
-CLOUD = os.environ.get("SQLITE_MODAL_CLOUD", "aws")
-MIN_CONTAINERS = int(os.environ.get("SQLITE_MODAL_MIN_CONTAINERS", "1"))
-
-app = modal.App("example-sqlite")
-
-db = Sqlite.from_name("notes")
-db.attach(app, region=REGION, cloud=CLOUD, min_containers=MIN_CONTAINERS)
+LOCAL_DB = Path(__file__).resolve().parent / ".notes.db"
 
 
-@app.local_entrypoint()
 def main() -> None:
-    """Smoke: schema + executemany insert + query + flush."""
-    with db:
-        db.execute(NOTE_DDL)
-        db.execute("DELETE FROM note")
-        db.executemany(
-            "INSERT INTO note (body) VALUES (?)",
-            [
-                ["hello from notes"],
-                ["second row"],
-                ["third row"],
-            ],
+    db = Sqlite.from_name(
+        "notes_demo",
+        create_if_missing=True,
+        create_options={"max_containers": 1},
+    )
+    # Bind before `with`: turso __enter__ is typed as Connection (no push/pull).
+    conn = db.connect(LOCAL_DB)
+    with conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT)"
         )
-        print(db.query("SELECT id, body FROM note ORDER BY id"))
-        print("url", db.url)
-        db.flush()
+        conn.execute("INSERT INTO notes (body) VALUES (?)", ("hello from modal",))
+        conn.commit()
+        conn.push()
+        conn.pull()
+        rows = conn.execute("SELECT id, body FROM notes ORDER BY id").fetchall()
+        print(rows)
+
+
+if __name__ == "__main__":
+    main()

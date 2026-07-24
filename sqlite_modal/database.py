@@ -1,164 +1,164 @@
-"""Persistence — local sqlite3 + Volume durability."""
+"""Named Sqlite handle — Modal naming + Turso ``connect``."""
 
 from __future__ import annotations
 
-import sqlite3
-import threading
-from collections.abc import Sequence
+import re
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
-from typing import Literal, NotRequired, Self, TypeAlias, TypedDict
 
 import modal
+from modal.exception import NotFoundError
+from turso.sync import ConnectionSync, connect
 
-SqlParam: TypeAlias = str | int | float | bool | None
-SqlParams: TypeAlias = Sequence[SqlParam]
-Row: TypeAlias = dict[str, SqlParam]
+from sqlite_modal.exceptions import InvalidNameError, MissingError
+from sqlite_modal.remote import CreateOptions, RemoteApp
+from sqlite_modal.turso import APP_PREFIX, REMOTE_NAME, VOLUME_NAME
 
-
-class ExecuteResult(TypedDict):
-    rowcount: int
-    lastrowid: int
-
-
-class BatchOp(TypedDict):
-    type: Literal["query", "execute"]
-    sql: str
-    params: NotRequired[list[SqlParam]]
-    params_seq: NotRequired[list[list[SqlParam]]]
+NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,127}$")
+READY_TIMEOUT_S = 120.0
+READY_POLL_S = 0.5
 
 
-class Database:
-    """Local sqlite3 connection with durable storage via ``modal.Volume``."""
+class Sqlite:
+    """Modal-named Turso Sync database.
 
-    VOLUME_MOUNT = Path("/data")
-    DEFAULT_PATH = VOLUME_MOUNT / "db.sqlite"
-    MAX_BATCH_OPS = 1_000
-    MAX_PARAMS_SEQ = 10_000
+    Each name is its own Modal App (``sqlite-modal-{name}``) running one
+    ``tursodb`` sync Server::
 
-    def __init__(self, conn: sqlite3.Connection, volume: modal.Volume) -> None:
-        self.conn = conn
-        self.volume = volume
-        self._lock = threading.Lock()
-        self._closed = False
+        db = Sqlite.from_name("orders", create_if_missing=True, create_options={...})
+        with db.connect("./orders.db") as conn:
+            conn.execute("...")
+            conn.push()
+    """
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        environment_name: str | None = None,
+        client: modal.Client | None = None,
+    ) -> None:
+        if not NAME_RE.fullmatch(name):
+            raise InvalidNameError(
+                f"invalid Sqlite name {name!r}; "
+                "expected ^[A-Za-z][A-Za-z0-9_]{0,127}$"
+            )
+        self.name = name
+        self.environment_name = environment_name
+        self.client = client
+        self.server: modal.Server | None = None
+        self.resolved_url: str | None = None
+
+    def __repr__(self) -> str:
+        return f"Sqlite(name={self.name!r})"
+
+    @property
+    def app_name(self) -> str:
+        return f"{APP_PREFIX}-{self.name}"
 
     @classmethod
-    def from_path(cls, path: Path, volume: modal.Volume) -> Self:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(
-            str(path),
-            timeout=5.0,
-            check_same_thread=False,
-            isolation_level=None,
-        )
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA foreign_keys=ON")
-        return cls(conn, volume)
+    def from_name(
+        cls,
+        name: str,
+        *,
+        environment_name: str | None = None,
+        create_if_missing: bool = False,
+        create_options: CreateOptions | None = None,
+        client: modal.Client | None = None,
+    ) -> Sqlite:
+        if create_options is not None and not create_if_missing:
+            raise ValueError("create_options requires create_if_missing=True")
 
-    def query(self, sql: str, params: SqlParams = ()) -> list[Row]:
-        with self._lock:
-            cur = self.conn.execute(sql, tuple(params))
-            return [dict(row) for row in cur.fetchall()]
+        db = cls(name, environment_name=environment_name, client=client)
+        if create_if_missing:
+            modal.Volume.from_name(
+                VOLUME_NAME,
+                create_if_missing=True,
+                environment_name=environment_name,
+                client=client,
+            )
+            RemoteApp.deploy(
+                name,
+                create_options=create_options,
+                environment_name=environment_name,
+                client=client,
+            )
+            return db
 
-    def execute(self, sql: str, params: SqlParams = ()) -> ExecuteResult:
-        with self._lock:
-            try:
-                self.conn.execute("BEGIN IMMEDIATE")
-                cur = self.conn.execute(sql, tuple(params))
-                result: ExecuteResult = {
-                    "rowcount": cur.rowcount,
-                    "lastrowid": int(cur.lastrowid or 0),
-                }
-                self.conn.execute("COMMIT")
-                return result
-            except Exception:
-                self._rollback()
-                raise
+        if not db.exists():
+            raise MissingError(
+                f"Sqlite {name!r} does not exist; "
+                "pass create_if_missing=True to create it"
+            )
+        return db
 
-    def executemany(self, sql: str, params_seq: Sequence[SqlParams]) -> ExecuteResult:
-        with self._lock:
-            try:
-                self.conn.execute("BEGIN IMMEDIATE")
-                cur = self.conn.executemany(sql, [tuple(row) for row in params_seq])
-                result: ExecuteResult = {
-                    "rowcount": cur.rowcount,
-                    "lastrowid": int(cur.lastrowid or 0),
-                }
-                self.conn.execute("COMMIT")
-                return result
-            except Exception:
-                self._rollback()
-                raise
-
-    def batch(
-        self, ops: Sequence[BatchOp]
-    ) -> list[ExecuteResult | dict[str, list[Row]]]:
-        if len(ops) > self.MAX_BATCH_OPS:
-            raise ValueError(f"batch exceeds {self.MAX_BATCH_OPS} ops")
-        writes = any(op["type"] == "execute" for op in ops)
-        with self._lock:
-            results: list[ExecuteResult | dict[str, list[Row]]] = []
-            try:
-                self.conn.execute("BEGIN IMMEDIATE" if writes else "BEGIN")
-                for op in ops:
-                    op_type = op["type"]
-                    if op_type == "query":
-                        cur = self.conn.execute(
-                            op["sql"], tuple(op.get("params", ()))
-                        )
-                        results.append(
-                            {"rows": [dict(row) for row in cur.fetchall()]}
-                        )
-                        continue
-                    if op_type != "execute":
-                        raise ValueError(f"invalid batch op type {op_type!r}")
-                    if "params_seq" in op:
-                        params_seq = op["params_seq"]
-                        if len(params_seq) > self.MAX_PARAMS_SEQ:
-                            raise ValueError(
-                                f"params_seq exceeds {self.MAX_PARAMS_SEQ} rows"
-                            )
-                        cur = self.conn.executemany(
-                            op["sql"], [tuple(r) for r in params_seq]
-                        )
-                    else:
-                        cur = self.conn.execute(
-                            op["sql"], tuple(op.get("params", ()))
-                        )
-                    results.append(
-                        {
-                            "rowcount": cur.rowcount,
-                            "lastrowid": int(cur.lastrowid or 0),
-                        }
-                    )
-                self.conn.execute("COMMIT")
-            except Exception:
-                self._rollback()
-                raise
-            return results
-
-    def _rollback(self) -> None:
+    @property
+    def url(self) -> str:
+        """Bare sync URL for ``turso.sync.connect(..., remote_url=...)``."""
+        if self.resolved_url is not None:
+            return self.resolved_url
         try:
-            self.conn.execute("ROLLBACK")
-        except sqlite3.Error:
-            pass
+            base = self.resolve_server().get_url()
+        except NotFoundError as exc:
+            raise RuntimeError(
+                f"sync URL unavailable for {self.name!r}; "
+                f"create with Sqlite.from_name({self.name!r}, "
+                f"create_if_missing=True)"
+            ) from exc
+        if not base:
+            raise RuntimeError(
+                f"sync URL unavailable for {self.name!r}; "
+                f"create with Sqlite.from_name({self.name!r}, "
+                f"create_if_missing=True)"
+            )
+        self.resolved_url = base.rstrip("/")
+        return self.resolved_url
 
-    def flush(self) -> None:
-        with self._lock:
-            self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        # Commit outside the SQL lock so other requests are not blocked on Volume I/O.
-        self.volume.commit()
+    def connect(
+        self,
+        path: str | Path,
+        *,
+        timeout_s: float = READY_TIMEOUT_S,
+    ) -> ConnectionSync:
+        """Open a local sync DB once the Modal Server is accepting traffic."""
+        path_str = str(path)
+        if not path_str:
+            raise ValueError("connect() requires a non-empty local path")
 
-    def close(self, *, commit: bool = False) -> None:
-        with self._lock:
-            if self._closed:
-                return
+        url = self.url
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
             try:
-                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            finally:
-                self.conn.close()
-                self._closed = True
-        if commit:
-            self.volume.commit()
+                urllib.request.urlopen(url, timeout=2.0)
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code != 503:
+                    break
+            except urllib.error.URLError:
+                pass
+            time.sleep(READY_POLL_S)
+        else:
+            raise TimeoutError(
+                f"Sqlite {self.name!r} Server not ready within "
+                f"{timeout_s:.0f}s at {url}"
+            )
+
+        return connect(path_str, remote_url=url)
+
+    def resolve_server(self) -> modal.Server:
+        if self.server is None:
+            self.server = modal.Server.from_name(
+                self.app_name,
+                REMOTE_NAME,
+                environment_name=self.environment_name,
+                client=self.client,
+            )
+        return self.server
+
+    def exists(self) -> bool:
+        try:
+            return bool(self.resolve_server().get_url())
+        except NotFoundError:
+            return False

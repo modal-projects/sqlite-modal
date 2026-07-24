@@ -1,23 +1,7 @@
 # Notes example
 
-Single-DB smoke for onboarding: schema → `executemany` → query → `flush`.
-
-## Setup
-
-Proxy tokens (`wk-` / `ws-`), then:
-
 ```bash
-uv sync
-export MODAL_PROXY_TOKEN_ID=wk-…
-export MODAL_PROXY_TOKEN_SECRET=ws-…
-modal workspace proxy-tokens allow "$MODAL_PROXY_TOKEN_ID" main
+uv run python examples/notes/app.py
 ```
 
-## Run
-
-```bash
-uv run modal run examples/notes/app.py
-# live-reload: uv run modal serve examples/notes/app.py
-```
-
-`Sqlite.from_name("notes")` attaches with `min_containers=1` in `eu-west` / `aws`.
+Creates `notes_demo` via `Sqlite.from_name(..., create_if_missing=True)`.

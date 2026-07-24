@@ -1,20 +1,43 @@
-"""Adoption-focused benchmark scenarios for sqlite_modal."""
+"""Adoption scenarios for Turso Sync remotes on Modal."""
 
 from __future__ import annotations
 
-import statistics
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import TypedDict
 
+from turso.sync import ConnectionSync
+
+from benchmarks.measure import LatencyMs, Samples
 from sqlite_modal import Sqlite
 
+NOTE_DDL = (
+    "CREATE TABLE IF NOT EXISTS note (id INTEGER PRIMARY KEY, body TEXT NOT NULL)"
+)
 
-class LatencyMs(TypedDict):
-    p50: float
-    p95: float
-    mean: float
+
+class NoteTable:
+    """Bench-only schema for the ``note`` table."""
+
+    def reset(self, conn: ConnectionSync) -> None:
+        conn.execute(NOTE_DDL)
+        conn.execute("DELETE FROM note")
+        conn.commit()
+
+
+class LocalFiles:
+    """Bench-only local path hygiene."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def clear(self) -> None:
+        parent = self.path.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        for p in parent.glob(f"{self.path.name}*"):
+            p.unlink()
 
 
 class WarmLatencyResult(TypedDict):
@@ -22,6 +45,8 @@ class WarmLatencyResult(TypedDict):
     n: int
     read_ms: LatencyMs
     write_ms: LatencyMs
+    push_ms: LatencyMs
+    pull_ms: LatencyMs
 
 
 class ColdStartResult(TypedDict):
@@ -29,6 +54,7 @@ class ColdStartResult(TypedDict):
     cold_first_ms: float
     warm_p50_ms: float
     warm_n: int
+    scaledown_wait_s: float
     note: str
 
 
@@ -65,134 +91,146 @@ class BatchSizeSweepResult(TypedDict):
     points: list[BatchSizePoint]
 
 
-class FlushCostResult(TypedDict):
+class PushCostResult(TypedDict):
     scenario: str
     n: int
     insert_ms: LatencyMs
-    insert_and_flush_ms: LatencyMs
+    insert_and_push_ms: LatencyMs
     note: str
 
 
-def percentile(samples: list[float], p: float) -> float:
-    if not samples:
-        return 0.0
-    xs = sorted(samples)
-    if len(xs) == 1:
-        return xs[0]
-    k = (len(xs) - 1) * (p / 100.0)
-    lo = int(k)
-    hi = min(lo + 1, len(xs) - 1)
-    if lo == hi:
-        return xs[lo]
-    return xs[lo] + (xs[hi] - xs[lo]) * (k - lo)
+def warm_latency(
+    remote: Sqlite, local: Path, *, n: int, warmup: int
+) -> WarmLatencyResult:
+    files = LocalFiles(local)
+    notes = NoteTable()
+    files.clear()
+    conn = remote.connect(local)
+    reads = Samples()
+    writes = Samples()
+    pushes = Samples()
+    pulls = Samples()
+    with conn:
+        notes.reset(conn)
+        conn.push()
+        for _ in range(warmup):
+            conn.execute("SELECT 1")
+            conn.execute("INSERT INTO note (body) VALUES (?)", ("warmup",))
+            conn.commit()
+            conn.push()
+            conn.pull()
 
+        for i in range(n):
+            t0 = time.perf_counter()
+            conn.execute("SELECT 1").fetchall()
+            reads.add((time.perf_counter() - t0) * 1000)
 
-def latency_stats(samples: list[float]) -> LatencyMs:
-    return {
-        "p50": round(percentile(samples, 50), 2),
-        "p95": round(percentile(samples, 95), 2),
-        "mean": round(statistics.fmean(samples), 2) if samples else 0.0,
-    }
+            t0 = time.perf_counter()
+            conn.execute("INSERT INTO note (body) VALUES (?)", (f"warm-{i}",))
+            conn.commit()
+            writes.add((time.perf_counter() - t0) * 1000)
 
+            pushes.measure(conn.push)
+            pulls.measure(conn.pull)
 
-def timed_ms(fn: Callable[[], object]) -> float:
-    t0 = time.perf_counter()
-    fn()
-    return (time.perf_counter() - t0) * 1000
-
-
-NOTE_DDL = (
-    "CREATE TABLE IF NOT EXISTS note (id INTEGER PRIMARY KEY, body TEXT NOT NULL)"
-)
-
-
-def ensure_schema(db: Sqlite) -> None:
-    db.execute(NOTE_DDL)
-    db.execute("DELETE FROM note")
-
-
-def warm_latency(db: Sqlite, *, n: int, warmup: int) -> WarmLatencyResult:
-    for _ in range(warmup):
-        db.query("SELECT 1 AS ok")
-        db.execute("INSERT INTO note (body) VALUES (?)", ("warmup",))
-
-    reads: list[float] = []
-    writes: list[float] = []
-    for i in range(n):
-
-        def do_read() -> None:
-            db.query("SELECT 1 AS ok")
-
-        def do_write(idx: int = i) -> None:
-            db.execute("INSERT INTO note (body) VALUES (?)", (f"warm-{idx}",))
-
-        reads.append(timed_ms(do_read))
-        writes.append(timed_ms(do_write))
     return {
         "scenario": "warm_latency",
         "n": n,
-        "read_ms": latency_stats(reads),
-        "write_ms": latency_stats(writes),
+        "read_ms": reads.summary(),
+        "write_ms": writes.summary(),
+        "push_ms": pushes.summary(),
+        "pull_ms": pulls.summary(),
     }
 
 
 def cold_start(
-    db: Sqlite,
+    remote: Sqlite,
+    local: Path,
     *,
     scaledown_wait_s: float,
     warm_n: int = 20,
 ) -> ColdStartResult:
-    """Measure first SQL after idle vs warm p50.
+    """Cold = connect + schema + push after scale-to-zero.
 
-    ``db`` must be attached with ``min_containers=0`` and a short
-    ``scaledown_window``. Caller warms once, then waits for scale-down.
+    Warm the remote once, idle past ``scaledown_window``, then measure the
+    first successful sync path (``connect`` includes Server readiness).
     """
-    # Ensure schema exists and container is up, then let it scale to zero.
-    ensure_schema(db)
-    db.query("SELECT 1 AS ok")
+    files = LocalFiles(local)
+    notes = NoteTable()
+    files.clear()
+    conn = remote.connect(local)
+    with conn:
+        notes.reset(conn)
+        conn.push()
+
     time.sleep(scaledown_wait_s)
 
-    cold_ms = timed_ms(lambda: db.query("SELECT 1 AS ok"))
+    files.clear()
+    t0 = time.perf_counter()
+    conn = remote.connect(local)
+    with conn:
+        notes.reset(conn)
+        conn.push()
+        cold_ms = (time.perf_counter() - t0) * 1000
 
-    warm_samples: list[float] = []
-    for _ in range(warm_n):
-        warm_samples.append(timed_ms(lambda: db.query("SELECT 1 AS ok")))
+        warm = Samples()
+        for i in range(warm_n):
+            conn.execute("INSERT INTO note (body) VALUES (?)", (f"warm-{i}",))
+            conn.commit()
+            warm.measure(conn.push)
 
     return {
         "scenario": "cold_start",
         "cold_first_ms": round(cold_ms, 2),
-        "warm_p50_ms": latency_stats(warm_samples)["p50"],
+        "warm_p50_ms": warm.summary()["p50"],
         "warm_n": warm_n,
+        "scaledown_wait_s": scaledown_wait_s,
         "note": (
-            f"waited {scaledown_wait_s:.0f}s after last request for scale-to-zero"
+            "cold includes Modal container bring-up (connect waits for "
+            "non-503) + schema + push"
         ),
     }
 
 
 def writer_concurrency(
-    db: Sqlite,
+    remote: Sqlite,
+    workdir: Path,
     *,
     clients: Sequence[int] = (1, 4, 16),
     ops_per_client: int = 40,
 ) -> WriterConcurrencyResult:
-    """Concurrent insert clients against one exclusive-writer Server."""
-    ensure_schema(db)
-    points: list[ConcurrencyPoint] = []
+    """Concurrent local writers each pushing to one remote (last-push-wins)."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    notes = NoteTable()
+    boot_path = workdir / "concurrency_boot.db"
+    LocalFiles(boot_path).clear()
+    conn = remote.connect(boot_path)
+    with conn:
+        notes.reset(conn)
+        conn.push()
 
+    points: list[ConcurrencyPoint] = []
     for n_clients in clients:
 
         def worker(client_id: int) -> list[float]:
-            samples: list[float] = []
-            for j in range(ops_per_client):
-
-                def do_insert(c: int = client_id, k: int = j) -> None:
-                    db.execute(
+            path = workdir / f"concurrency_c{client_id}.db"
+            LocalFiles(path).clear()
+            c = remote.connect(path)
+            samples = Samples()
+            with c:
+                c.execute(NOTE_DDL)
+                c.commit()
+                c.pull()
+                for j in range(ops_per_client):
+                    t0 = time.perf_counter()
+                    c.execute(
                         "INSERT INTO note (body) VALUES (?)",
-                        (f"c{c}-{k}",),
+                        (f"c{client_id}-{j}",),
                     )
-
-                samples.append(timed_ms(do_insert))
-            return samples
+                    c.commit()
+                    c.push()
+                    samples.add((time.perf_counter() - t0) * 1000)
+            return samples.values
 
         t0 = time.perf_counter()
         latencies: list[float] = []
@@ -202,13 +240,16 @@ def writer_concurrency(
                 latencies.extend(fut.result())
         wall = time.perf_counter() - t0
         total_ops = n_clients * ops_per_client
+        merged = Samples()
+        for ms in latencies:
+            merged.add(ms)
         points.append(
             {
                 "clients": n_clients,
                 "ops": total_ops,
                 "wall_s": round(wall, 3),
                 "ops_per_s": round(total_ops / wall, 1) if wall else 0.0,
-                "latency_ms": latency_stats(latencies),
+                "latency_ms": merged.summary(),
             }
         )
     return {"scenario": "writer_concurrency", "points": points}
@@ -218,30 +259,37 @@ def multi_db_parallel(
     single: Sqlite,
     db_a: Sqlite,
     db_b: Sqlite,
+    workdir: Path,
     *,
     ops_per_db: int = 80,
 ) -> MultiDbParallelResult:
-    """Single-DB sequential writes vs two DBs writing in parallel."""
-    ensure_schema(single)
-    ensure_schema(db_a)
-    ensure_schema(db_b)
+    """Sequential push-writes on one DB vs two remotes in parallel."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    notes = NoteTable()
 
-    t0 = time.perf_counter()
-    for i in range(ops_per_db):
-        single.execute("INSERT INTO note (body) VALUES (?)", (f"solo-{i}",))
-    single_wall = time.perf_counter() - t0
+    def write_many(remote: Sqlite, path: Path, prefix: str) -> float:
+        LocalFiles(path).clear()
+        conn = remote.connect(path)
+        with conn:
+            notes.reset(conn)
+            conn.push()
+            t1 = time.perf_counter()
+            for i in range(ops_per_db):
+                conn.execute(
+                    "INSERT INTO note (body) VALUES (?)",
+                    (f"{prefix}-{i}",),
+                )
+                conn.commit()
+                conn.push()
+            return time.perf_counter() - t1
+
+    single_wall = write_many(single, workdir / "multi_single.db", "solo")
     single_rate = ops_per_db / single_wall if single_wall else 0.0
-
-    def write_many(db: Sqlite, prefix: str) -> float:
-        t1 = time.perf_counter()
-        for i in range(ops_per_db):
-            db.execute("INSERT INTO note (body) VALUES (?)", (f"{prefix}-{i}",))
-        return time.perf_counter() - t1
 
     t0 = time.perf_counter()
     with ThreadPoolExecutor(max_workers=2) as pool:
-        fa = pool.submit(write_many, db_a, "a")
-        fb = pool.submit(write_many, db_b, "b")
+        fa = pool.submit(write_many, db_a, workdir / "multi_a.db", "a")
+        fb = pool.submit(write_many, db_b, workdir / "multi_b.db", "b")
         wall_a = fa.result()
         wall_b = fb.result()
     parallel_wall = time.perf_counter() - t0
@@ -260,45 +308,65 @@ def multi_db_parallel(
 
 
 def batch_size_sweep(
-    db: Sqlite, *, sizes: tuple[int, ...] = (10, 100, 1000)
+    remote: Sqlite,
+    local: Path,
+    *,
+    sizes: tuple[int, ...] = (10, 100, 1000),
 ) -> BatchSizeSweepResult:
+    files = LocalFiles(local)
+    notes = NoteTable()
+    files.clear()
+    conn = remote.connect(local)
     points: list[BatchSizePoint] = []
-    for size in sizes:
-        db.execute("DELETE FROM note")
-        t0 = time.perf_counter()
-        db.executemany(
-            "INSERT INTO note (body) VALUES (?)",
-            [[f"sz-{size}-{i}"] for i in range(size)],
-        )
-        wall = time.perf_counter() - t0
-        points.append(
-            {
-                "batch_size": size,
-                "wall_s": round(wall, 4),
-                "rows_per_s": round(size / wall, 1) if wall else 0.0,
-            }
-        )
+    with conn:
+        notes.reset(conn)
+        conn.push()
+        for size in sizes:
+            conn.execute("DELETE FROM note")
+            conn.commit()
+            t0 = time.perf_counter()
+            conn.executemany(
+                "INSERT INTO note (body) VALUES (?)",
+                [(f"sz-{size}-{i}",) for i in range(size)],
+            )
+            conn.commit()
+            conn.push()
+            wall = time.perf_counter() - t0
+            points.append(
+                {
+                    "batch_size": size,
+                    "wall_s": round(wall, 4),
+                    "rows_per_s": round(size / wall, 1) if wall else 0.0,
+                }
+            )
     return {"scenario": "batch_size_sweep", "points": points}
 
 
-def flush_cost(db: Sqlite, *, n: int) -> FlushCostResult:
-    insert_only: list[float] = []
-    insert_flush: list[float] = []
-    for i in range(n):
+def push_cost(remote: Sqlite, local: Path, *, n: int) -> PushCostResult:
+    files = LocalFiles(local)
+    notes = NoteTable()
+    files.clear()
+    conn = remote.connect(local)
+    insert_only = Samples()
+    insert_push = Samples()
+    with conn:
+        notes.reset(conn)
+        conn.push()
+        for i in range(n):
+            t0 = time.perf_counter()
+            conn.execute("INSERT INTO note (body) VALUES (?)", (f"io-{i}",))
+            conn.commit()
+            insert_only.add((time.perf_counter() - t0) * 1000)
 
-        def do_insert(idx: int = i) -> None:
-            db.execute("INSERT INTO note (body) VALUES (?)", (f"io-{idx}",))
-
-        def do_insert_flush(idx: int = i) -> None:
-            db.execute("INSERT INTO note (body) VALUES (?)", (f"if-{idx}",))
-            db.flush()
-
-        insert_only.append(timed_ms(do_insert))
-        insert_flush.append(timed_ms(do_insert_flush))
+            t0 = time.perf_counter()
+            conn.execute("INSERT INTO note (body) VALUES (?)", (f"ip-{i}",))
+            conn.commit()
+            conn.push()
+            insert_push.add((time.perf_counter() - t0) * 1000)
     return {
-        "scenario": "flush_cost",
+        "scenario": "push_cost",
         "n": n,
-        "insert_ms": latency_stats(insert_only),
-        "insert_and_flush_ms": latency_stats(insert_flush),
-        "note": "flush is a sync volume.commit barrier",
+        "insert_ms": insert_only.summary(),
+        "insert_and_push_ms": insert_push.summary(),
+        "note": "push syncs to tursodb; Volume durability is exit-only",
     }
