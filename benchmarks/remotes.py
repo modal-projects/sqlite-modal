@@ -25,6 +25,7 @@ COLD_OPTIONS: CreateOptions = {
     "routing_region": ROUTING_REGION,
 }
 
+WARM_NAME = "bench"
 COLD_NAME = "bench_cold"
 
 

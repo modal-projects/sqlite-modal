@@ -89,7 +89,7 @@ push wins**.
 | `sqlite_modal/turso.py` | Version pins, Image, constants |
 | `sqlite_modal/exceptions.py` | `SqliteError` hierarchy |
 | `examples/` | Smoke apps |
-| `benchmarks/` | Adoption suite → JSON + `docs/charts/` |
+| `benchmarks/` | Latency + throughput suite → JSON + `docs/charts/` |
 
 ## Runbooks
 
@@ -111,13 +111,14 @@ uv run ty check sqlite_modal examples benchmarks tests
 ### Benchmarks
 
 ```bash
-uv run python benchmarks/app.py --create-remotes   # once (deploys bench_*)
-uv run python benchmarks/app.py                    # full suite + cold
-uv run python benchmarks/app.py --skip-cold
+uv run python benchmarks/app.py --create-remotes   # once (bench + bench_cold)
+uv run python benchmarks/app.py                    # latency + throughput + sync
+uv run python benchmarks/app.py --cold             # optional cold start
 ```
 
 See [benchmarks/README.md](benchmarks/README.md). JSON →
-`benchmarks/results/latest.json` (gitignored); PNGs → `docs/charts/`.
+`benchmarks/results/latest.json` (gitignored); charts →
+`docs/charts/latency.png`, `throughput.png`.
 
 ### Redeploy a named DB
 
@@ -141,31 +142,16 @@ Re-running with `create_if_missing=True` redeploys the App (picks up Image /
 
 ## Benchmark snapshot
 
-Recent `uk` / `eu-west` run (`min_containers=1` unless noted):
+Recent `uk` / `eu-west` run (`bench` with `min_containers=1`):
 
 | Metric | Value |
 |--------|-------|
-| Local read / write p50 | ~0.05 ms / ~0.2 ms |
-| Warm push / pull p50 | ~169 ms / ~80 ms |
-| Insert + push p50 | ~153 ms |
-| Cold first connect+push | ~5.6 s |
-| Warm push after cold | ~157 ms p50 |
-| 1000-row `executemany` + push | ~2.4k rows/s |
-| 16 push clients (one DB) | ~67 ops/s, p50 ~190 ms |
-| 2 DBs in parallel | ~1.9× single-DB rate |
+| Local read p50 / p95 | ~0.01 ms / ~0.02 ms |
+| Local write (commit) p50 / p95 | ~0.09 ms / ~0.12 ms |
+| Local read throughput | ~121k ops/s |
+| Local write throughput | ~9.3k ops/s |
+| Warm push / pull p50 | ~158 ms / ~79 ms |
 
-Local SQL vs warm sync (separate scales — local is sub-ms):
+![Local latency](docs/charts/latency.png)
 
-![Warm latency](docs/charts/warm_latency.png)
-
-Ops/s and insert+push p50 vs concurrent clients on one remote:
-
-![Writer concurrency](docs/charts/writer_concurrency.png)
-
-Push-write rate: one named DB vs two in parallel:
-
-![Multi-DB scale-out](docs/charts/multi_db_scaleout.png)
-
-First connect+push after scale-to-zero vs warm push p50:
-
-![Cold vs warm](docs/charts/cold_vs_warm.png)
+![Local throughput](docs/charts/throughput.png)

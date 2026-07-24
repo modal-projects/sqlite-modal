@@ -1,59 +1,41 @@
 # Benchmarks
 
-Adoption measurements against Turso Sync remotes on Modal: local SQL +
-`push`/`pull`, cold start after scale-to-zero, concurrent pushers, multi-DB
-scale-out, bulk insert+push, and push cost vs local commit.
+Local read/write **latency** and **throughput** against a warm Turso Sync
+remote on Modal. Sync push/pull (and optional cold start) are table extras,
+not charts.
 
 ## Run
 
 ```bash
 uv sync --group bench
 
-# once: deploy the four bench remotes with the intended autoscaler options
-uv run python benchmarks/app.py --create-remotes --skip-cold
+# once: deploy bench (+ bench_cold for --cold)
+uv run python benchmarks/app.py --create-remotes
 
-# subsequent runs: lookup only (no redeploy)
-uv run python benchmarks/app.py --skip-cold
 uv run python benchmarks/app.py
-uv run python benchmarks/app.py --n 20 --ops-per-client 40
+uv run python benchmarks/app.py --cold
+uv run python benchmarks/app.py --n 50 --ops 500
 ```
 
 | Artifact | Location |
 |----------|----------|
 | JSON | `benchmarks/results/latest.json` (gitignored) |
-| Charts | `docs/charts/*.png` (`warm_latency`, concurrency, scale-out, cold) |
+| Charts | `docs/charts/latency.png`, `throughput.png` |
 
-Cold start waits for scale-to-zero (~35s) then measures `connect` + schema +
-push (`connect` blocks until the Server is ready). Use `--skip-cold` for a
-faster loop.
+## Scenarios
 
-## Layout
-
-| Module | Role |
-|--------|------|
-| `measure.py` | `Samples` — ms timings and p50/p95/mean |
-| `scenarios.py` | Adoption scenarios via `Sqlite.connect` |
-| `remotes.py` | Create options + `resolve(..., create=)` |
-| `app.py` | CLI |
-| `report.py` / `charts.py` | JSON + product charts |
-
-## Scenarios → questions
-
-| Scenario | Adoption question |
-|----------|-------------------|
-| `warm_latency` | Local read/write and warm push/pull p50/p95? |
-| `cold_start` | What do I pay for scale-to-zero? |
-| `writer_concurrency` | Many clients pushing one remote (last-push-wins)? |
-| `multi_db_parallel` | More write throughput via more named DBs? |
-| `batch_size_sweep` | When is bulk `executemany` + one push cheap? |
-| `push_cost` | What does sync push add over local commit? |
+| Scenario | Question |
+|----------|----------|
+| `local_latency` | Local `SELECT` / `INSERT+commit` p50/p95? |
+| `local_throughput` | Sustained local read / write ops/s? |
+| `sync_latency` | Warm `push` / `pull` p50? (table only) |
+| `cold_start` | First connect+push after scale-to-zero? (`--cold`) |
 
 ## Remotes
 
 | Name | Role |
 |------|------|
 | `bench` | Warm (`min_containers=1`) |
-| `bench_cold` | Scale-to-zero (`min_containers=0`) |
-| `bench_a` / `bench_b` | Parallel writers for multi-DB scale-out |
+| `bench_cold` | Scale-to-zero; only needed for `--cold` |
 
 Re-run with `--create-remotes` after changing options in `remotes.py`.

@@ -8,12 +8,10 @@ from pathlib import Path
 from typing import TypedDict
 
 from benchmarks.scenarios import (
-    BatchSizeSweepResult,
     ColdStartResult,
-    MultiDbParallelResult,
-    PushCostResult,
-    WarmLatencyResult,
-    WriterConcurrencyResult,
+    LocalLatencyResult,
+    LocalThroughputResult,
+    SyncLatencyResult,
 )
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
@@ -28,24 +26,20 @@ class BenchMeta(TypedDict):
 
 class BenchReport(TypedDict):
     meta: BenchMeta
-    warm_latency: WarmLatencyResult
+    local_latency: LocalLatencyResult
+    local_throughput: LocalThroughputResult
+    sync_latency: SyncLatencyResult
     cold_start: ColdStartResult | None
-    writer_concurrency: WriterConcurrencyResult
-    multi_db_parallel: MultiDbParallelResult
-    batch_size_sweep: BatchSizeSweepResult
-    push_cost: PushCostResult
 
 
 def build_report(
     *,
     region: str,
     routing_region: str,
-    warm_latency: WarmLatencyResult,
+    local_latency: LocalLatencyResult,
+    local_throughput: LocalThroughputResult,
+    sync_latency: SyncLatencyResult,
     cold_start: ColdStartResult | None,
-    writer_concurrency: WriterConcurrencyResult,
-    multi_db_parallel: MultiDbParallelResult,
-    batch_size_sweep: BatchSizeSweepResult,
-    push_cost: PushCostResult,
 ) -> BenchReport:
     return {
         "meta": {
@@ -53,16 +47,14 @@ def build_report(
             "region": region,
             "routing_region": routing_region,
             "note": (
-                "Turso Sync on Modal: local SQL + push/pull, cold start, "
-                "writer concurrency, multi-DB scale-out, batch, push cost"
+                "Local read/write latency + throughput; "
+                "sync push/pull extras; optional cold start"
             ),
         },
-        "warm_latency": warm_latency,
+        "local_latency": local_latency,
+        "local_throughput": local_throughput,
+        "sync_latency": sync_latency,
         "cold_start": cold_start,
-        "writer_concurrency": writer_concurrency,
-        "multi_db_parallel": multi_db_parallel,
-        "batch_size_sweep": batch_size_sweep,
-        "push_cost": push_cost,
     }
 
 
