@@ -21,7 +21,8 @@ def main() -> None:
             create_if_missing=True,
             create_options={"max_containers": 1},
         )
-        with db.connect(HERE / f".{name}.db") as conn:
+        conn = db.connect(HERE / f".{name}.db")
+        with conn:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, body TEXT)"
             )

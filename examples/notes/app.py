@@ -20,7 +20,9 @@ def main() -> None:
         create_if_missing=True,
         create_options={"max_containers": 1},
     )
-    with db.connect(LOCAL_DB) as conn:
+    # Bind before `with`: turso __enter__ is typed as Connection (no push/pull).
+    conn = db.connect(LOCAL_DB)
+    with conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT)"
         )

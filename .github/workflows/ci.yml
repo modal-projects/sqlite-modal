@@ -14,7 +14,7 @@ jobs:
         with:
           enable-cache: true
       - name: Sync
-        run: uv sync --group dev
+        run: uv sync --group dev --group bench
       - name: Ruff
         run: uv run ruff check sqlite_modal examples benchmarks tests
       - name: Ty

@@ -28,7 +28,8 @@ db = Sqlite.from_name(
         # any @app.server kwarg: compute_region, min_containers, …
     },
 )
-with db.connect("./orders.db") as conn:
+conn = db.connect("./orders.db")
+with conn:
     conn.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")
     conn.execute("INSERT INTO t VALUES (?)", ("a",))
     conn.commit()
