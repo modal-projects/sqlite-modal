@@ -21,7 +21,7 @@ uv run python benchmarks/app.py --n 20 --ops-per-client 40
 | Artifact | Location |
 |----------|----------|
 | JSON | `benchmarks/results/latest.json` (gitignored) |
-| Charts | `docs/charts/*.png` |
+| Charts | `docs/charts/*.png` (`warm_latency`, concurrency, scale-out, cold) |
 
 Cold start waits for scale-to-zero (~35s) then measures `connect` + schema +
 push (`connect` blocks until the Server is ready). Use `--skip-cold` for a

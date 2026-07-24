@@ -12,6 +12,7 @@ _BLUE = "#1f6feb"
 _ORANGE = "#e8590c"
 _GREEN = "#2f9e44"
 _GRAY = "#868e96"
+_PURPLE = "#9c36b5"
 
 
 def render_charts(report: BenchReport, out_dir: Path | None = None) -> list[Path]:
@@ -30,9 +31,40 @@ def render_charts(report: BenchReport, out_dir: Path | None = None) -> list[Path
         plt.close(fig)
         written.append(path)
 
+    def label_bars(ax: plt.Axes, bars: object, values: list[float], fmt: str) -> None:
+        for bar, val in zip(bars, values, strict=True):  # type: ignore[arg-type]
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                val,
+                fmt.format(val),
+                ha="center",
+                va="bottom",
+                fontsize=9,
+            )
+
+    warm = report["warm_latency"]
     conc = report["writer_concurrency"]
     multi = report["multi_db_parallel"]
     cold = report["cold_start"]
+
+    # Local SQL is sub-ms; sync is ~100ms — split axes so both remain readable.
+    fig, (ax_local, ax_sync) = plt.subplots(
+        1, 2, figsize=(9.5, 4.0), constrained_layout=True
+    )
+    local_labels = ["Read", "Write\n(commit)"]
+    local_vals = [warm["read_ms"]["p50"], warm["write_ms"]["p50"]]
+    bars_local = ax_local.bar(local_labels, local_vals, color=[_GREEN, _BLUE])
+    ax_local.set_ylabel("p50 (ms)")
+    ax_local.set_title("Local SQL (embedded file)")
+    label_bars(ax_local, bars_local, local_vals, "{:.2f}")
+
+    sync_labels = ["Push", "Pull"]
+    sync_vals = [warm["push_ms"]["p50"], warm["pull_ms"]["p50"]]
+    bars_sync = ax_sync.bar(sync_labels, sync_vals, color=[_ORANGE, _PURPLE])
+    ax_sync.set_ylabel("p50 (ms)")
+    ax_sync.set_title("Warm sync to Modal Server")
+    label_bars(ax_sync, bars_sync, sync_vals, "{:.0f}")
+    save(fig, "warm_latency.png")
 
     fig, (ax_ops, ax_lat) = plt.subplots(
         1, 2, figsize=(9.5, 4.0), constrained_layout=True
@@ -61,15 +93,7 @@ def render_charts(report: BenchReport, out_dir: Path | None = None) -> list[Path
     bars = ax.bar(labels, values, color=[_BLUE, _GREEN])
     ax.set_ylabel("Push-write ops / s")
     ax.set_title("Write throughput: one named DB vs two in parallel")
-    for bar, val in zip(bars, values, strict=True):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            val,
-            f"{val:.0f}",
-            ha="center",
-            va="bottom",
-            fontsize=9,
-        )
+    label_bars(ax, bars, values, "{:.0f}")
     save(fig, "multi_db_scaleout.png")
 
     if cold is not None:
