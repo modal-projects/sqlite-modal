@@ -9,6 +9,11 @@ dependencies = [
     "pyturso==0.5.1",
 ]
 
+[project.optional-dependencies]
+bench = [
+    "matplotlib>=3.11.0,<4",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -22,6 +27,9 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.15.21",
     "ty>=0.0.59",
+]
+bench = [
+    "sqlite-modal[bench]",
 ]
 
 [tool.pytest.ini_options]

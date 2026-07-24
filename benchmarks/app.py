@@ -1,65 +1,124 @@
-"""Lightweight latency probes against a deployed remote."""
+"""Adoption benchmarks for Turso Sync on Modal.
+
+Lookup existing remotes by default. Deploy them once with ``--create-remotes``.
+
+```bash
+uv sync --group bench
+uv run python benchmarks/app.py --create-remotes --skip-cold
+uv run python benchmarks/app.py --skip-cold
+uv run python benchmarks/app.py
+```
+"""
 
 from __future__ import annotations
 
+import argparse
 import json
-import statistics
-import time
 from pathlib import Path
 
-from sqlite_modal import Sqlite
+from benchmarks.charts import render_charts
+from benchmarks.remotes import (
+    COLD_NAME,
+    COLD_OPTIONS,
+    COLD_WAIT_S,
+    REGION,
+    ROUTING_REGION,
+    WARM_OPTIONS,
+    resolve,
+)
+from benchmarks.report import build_report, write_report
+from benchmarks.scenarios import (
+    batch_size_sweep,
+    cold_start,
+    multi_db_parallel,
+    push_cost,
+    warm_latency,
+    writer_concurrency,
+)
 
-HERE = Path(__file__).resolve().parent
-RESULTS = HERE / "results"
-LOCAL_DB = HERE / ".bench.db"
+WORKDIR = Path(__file__).resolve().parent / "results" / "workdir"
 
 
-def main(rounds: int = 20) -> None:
-    db = Sqlite.from_name(
-        "bench_demo",
-        create_if_missing=True,
-        create_options={"max_containers": 1},
+def main(
+    *,
+    n: int = 30,
+    warmup: int = 10,
+    ops_per_client: int = 40,
+    ops_per_db: int = 80,
+    push_n: int = 10,
+    skip_cold: bool = False,
+    create_remotes: bool = False,
+) -> None:
+    WORKDIR.mkdir(parents=True, exist_ok=True)
+
+    action = "creating" if create_remotes else "looking up"
+    print(f"{action} remotes…")
+    bench_db = resolve("bench", create=create_remotes, options=WARM_OPTIONS)
+    bench_a = resolve("bench_a", create=create_remotes, options=WARM_OPTIONS)
+    bench_b = resolve("bench_b", create=create_remotes, options=WARM_OPTIONS)
+    bench_cold = resolve(
+        COLD_NAME, create=create_remotes, options=COLD_OPTIONS
     )
-    if LOCAL_DB.exists():
-        LOCAL_DB.unlink()
 
-    conn = db.connect(LOCAL_DB)
-    with conn:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, v TEXT)"
+    cold = None
+    if not skip_cold:
+        print(
+            f"cold-start: idle {bench_cold.name} for {COLD_WAIT_S:.0f}s, "
+            "then measure readiness+connect+push"
         )
-        conn.commit()
-        conn.push()
+        cold = cold_start(
+            bench_cold,
+            WORKDIR / "cold.db",
+            scaledown_wait_s=COLD_WAIT_S,
+        )
 
-    local_ms: list[float] = []
-    for _ in range(rounds):
-        t0 = time.perf_counter()
-        conn = db.connect(LOCAL_DB)
-        with conn:
-            conn.execute("INSERT INTO t (v) VALUES (?)", ("x",))
-            conn.commit()
-        local_ms.append((time.perf_counter() - t0) * 1000)
-
-    sync_ms: list[float] = []
-    for _ in range(rounds):
-        t0 = time.perf_counter()
-        conn = db.connect(LOCAL_DB)
-        with conn:
-            conn.execute("INSERT INTO t (v) VALUES (?)", ("y",))
-            conn.commit()
-            conn.push()
-            conn.pull()
-        sync_ms.append((time.perf_counter() - t0) * 1000)
-
-    report = {
-        "rounds": rounds,
-        "local_insert_p50_ms": statistics.median(local_ms),
-        "push_pull_p50_ms": statistics.median(sync_ms),
-    }
-    RESULTS.mkdir(exist_ok=True)
-    (RESULTS / "latest.json").write_text(json.dumps(report, indent=2) + "\n")
+    report = build_report(
+        region=REGION,
+        routing_region=ROUTING_REGION,
+        warm_latency=warm_latency(
+            bench_db, WORKDIR / "warm.db", n=n, warmup=warmup
+        ),
+        cold_start=cold,
+        writer_concurrency=writer_concurrency(
+            bench_db, WORKDIR / "concurrency", ops_per_client=ops_per_client
+        ),
+        multi_db_parallel=multi_db_parallel(
+            bench_db,
+            bench_a,
+            bench_b,
+            WORKDIR / "multi",
+            ops_per_db=ops_per_db,
+        ),
+        batch_size_sweep=batch_size_sweep(bench_db, WORKDIR / "batch.db"),
+        push_cost=push_cost(bench_db, WORKDIR / "push_cost.db", n=push_n),
+    )
     print(json.dumps(report, indent=2))
+    path = write_report(report)
+    print(f"wrote {path}")
+    for chart in render_charts(report):
+        print(f"wrote {chart}")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--n", type=int, default=30)
+    parser.add_argument("--warmup", type=int, default=10)
+    parser.add_argument("--ops-per-client", type=int, default=40)
+    parser.add_argument("--ops-per-db", type=int, default=80)
+    parser.add_argument("--push-n", type=int, default=10)
+    parser.add_argument("--skip-cold", action="store_true")
+    parser.add_argument(
+        "--create-remotes",
+        action="store_true",
+        help="Deploy bench / bench_a / bench_b / bench_cold (once)",
+    )
+    args = parser.parse_args()
+    main(
+        n=args.n,
+        warmup=args.warmup,
+        ops_per_client=args.ops_per_client,
+        ops_per_db=args.ops_per_db,
+        push_n=args.push_n,
+        skip_cold=args.skip_cold,
+        create_remotes=args.create_remotes,
+    )

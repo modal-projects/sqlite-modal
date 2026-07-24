@@ -83,5 +83,6 @@ uv run ty check sqlite_modal examples benchmarks tests
 ## Benchmarks
 
 ```bash
-uv run python benchmarks/profile.py
+uv sync --group bench
+uv run python benchmarks/app.py --skip-cold
 ```
