@@ -24,6 +24,7 @@ def render_charts(report: BenchReport, out_dir: Path | None = None) -> list[Path
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.container import BarContainer
 
     dest = out_dir if out_dir is not None else CHARTS_DIR
     dest.mkdir(parents=True, exist_ok=True)
@@ -35,8 +36,10 @@ def render_charts(report: BenchReport, out_dir: Path | None = None) -> list[Path
         plt.close(fig)
         written.append(path)
 
-    def label_bars(ax: plt.Axes, bars: object, values: list[float], fmt: str) -> None:
-        for bar, val in zip(bars, values, strict=True):  # type: ignore[arg-type]
+    def label_bars(
+        ax: plt.Axes, bars: BarContainer, values: list[float], fmt: str
+    ) -> None:
+        for bar, val in zip(bars, values, strict=True):
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
                 val,
