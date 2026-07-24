@@ -1,16 +1,7 @@
 # Multi-DB example
 
-Shows two named Sqlites on one App — separate Servers and Volumes.
-
-## Setup
-
-Same proxy-token env as the notes example.
-
-## Run
-
 ```bash
-uv run modal run examples/multi/app.py
+uv run python examples/multi/app.py
 ```
 
-Creates `SqliteServer_alpha` / `SqliteServer_beta` and Volumes `alpha-data` /
-`beta-data`. Each inserts and queries independently.
+Creates `multi_a` and `multi_b` (separate Modal Apps) via `from_name`.

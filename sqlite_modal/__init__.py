@@ -1,32 +1,17 @@
-"""Named SQLite on Modal Servers.
+"""Turso Sync on Modal.
 
-Public API: ``Sqlite`` (from_name / attach / query / execute / executemany /
-batch / flush / close), ``BatchOp``, ``ExecuteResult``, ``Row``, and exception
-types. Many Sqlites per App (one Server each).
+Public API: ``Sqlite`` (``from_name`` / ``connect`` / ``remote_url``),
+``CreateOptions``, and exception types.
 """
 
-from sqlite_modal.client import Sqlite
-from sqlite_modal.db import BatchOp, ExecuteResult, Row
-from sqlite_modal.exceptions import (
-    AlreadyAttachedError,
-    AuthError,
-    InvalidNameError,
-    NotAttachedError,
-    ServiceError,
-    SqlError,
-    SqliteError,
-)
+from sqlite_modal.database import Sqlite
+from sqlite_modal.exceptions import InvalidNameError, MissingError, SqliteError
+from sqlite_modal.remote import CreateOptions
 
 __all__ = [
-    "AlreadyAttachedError",
-    "AuthError",
-    "BatchOp",
-    "ExecuteResult",
+    "CreateOptions",
     "InvalidNameError",
-    "NotAttachedError",
-    "Row",
-    "ServiceError",
-    "SqlError",
+    "MissingError",
     "Sqlite",
     "SqliteError",
 ]

@@ -1,34 +1,41 @@
-# ---
-# cmd: ["modal", "run", "examples/multi/app.py"]
-# ---
-#
-# Multi-DB smoke: two Sqlites on one App (one Server + Volume each).
-# Requires MODAL_PROXY_TOKEN_ID / MODAL_PROXY_TOKEN_SECRET.
+"""Two named DBs (two Modal Apps).
+
+```bash
+uv run python examples/multi/app.py
+```
+"""
 
 from __future__ import annotations
 
-import modal
+from pathlib import Path
 
 from sqlite_modal import Sqlite
 
-REGION = "eu-west"
-CLOUD = "aws"
-
-app = modal.App("example-sqlite-multi")
-
-alpha = Sqlite.from_name("alpha")
-alpha.attach(app, region=REGION, cloud=CLOUD, min_containers=1)
-
-beta = Sqlite.from_name("beta")
-beta.attach(app, region=REGION, cloud=CLOUD, min_containers=1)
-
-DDL = "CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, v TEXT NOT NULL)"
+HERE = Path(__file__).resolve().parent
 
 
-@app.local_entrypoint()
 def main() -> None:
-    for db, label in ((alpha, "alpha"), (beta, "beta")):
-        db.execute(DDL)
-        db.execute("DELETE FROM t")
-        db.execute("INSERT INTO t (v) VALUES (?)", (f"hello from {label}",))
-        print(label, db.query("SELECT id, v FROM t ORDER BY id"), db.url)
+    for name, body in (("multi_a", "alpha"), ("multi_b", "beta")):
+        db = Sqlite.from_name(
+            name,
+            create_if_missing=True,
+            create_options={"max_containers": 1},
+        )
+        conn = db.connect(HERE / f".{name}.db")
+        with conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS items "
+                "(id INTEGER PRIMARY KEY, body TEXT)"
+            )
+            conn.execute("INSERT INTO items (body) VALUES (?)", (body,))
+            conn.commit()
+            conn.push()
+            conn.pull()
+            rows = conn.execute(
+                "SELECT id, body FROM items ORDER BY id"
+            ).fetchall()
+            print(name, rows)
+
+
+if __name__ == "__main__":
+    main()

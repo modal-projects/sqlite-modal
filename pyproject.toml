@@ -1,21 +1,12 @@
 [project]
 name = "sqlite-modal"
-version = "0.1.0"
-description = "Named SQLite on Modal Servers — one Volume per DB, HTTP SQL"
+version = "0.2.0"
+description = "Turso Sync on Modal — Sqlite.from_name + local turso.sync connections"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "httpx>=0.28.0,<1",
     "modal>=1.5.2,<2",
-]
-
-[project.optional-dependencies]
-server = [
-    "fastapi[standard]>=0.139.0,<1",
-    "uvicorn>=0.34.0,<1",
-]
-example = [
-    "matplotlib>=3.11.0,<4",
+    "pyturso==0.5.1",
 ]
 
 [build-system]
@@ -27,7 +18,7 @@ packages = ["sqlite_modal"]
 
 [dependency-groups]
 dev = [
-    "sqlite-modal[server,example]",
+    "sqlite-modal",
     "pytest>=8.0",
     "ruff>=0.15.21",
     "ty>=0.0.59",
