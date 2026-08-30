@@ -18,7 +18,7 @@ local file  --push/pull-->  SyncServer (tursodb)
 Python >= 3.12 and a Modal account (`modal setup`).
 
 ```bash
-uv add git+https://github.com/modal-projects/distributed-sqlite.git
+uv add git+https://github.com/modal-projects/sqlite-modal.git
 ```
 
 Deploy from a checkout (or editable install) so Image builds can
