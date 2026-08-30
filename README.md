@@ -1,7 +1,11 @@
-# sqlite_modal
+# sqlite-modal
 
-Named Turso Sync DBs on Modal. Local SQL via pyturso; `push` / `pull` to a
-Modal `tursodb` Server; Volume holds `server.db` on exit. Not Turso Cloud.
+Named [Turso Sync](https://docs.turso.tech/sync) databases on
+[Modal](https://modal.com). Local SQL via pyturso; `push` / `pull` to a
+`tursodb` Server in your workspace. Volume holds `server.db` on exit.
+
+You create named DBs in your Modal workspace. This is not a managed
+multi-tenant service.
 
 ```text
 local file  --push/pull-->  SyncServer (tursodb)
@@ -9,9 +13,16 @@ local file  --push/pull-->  SyncServer (tursodb)
                          exit → Volume /data/{name}/
 ```
 
-## Setup
+## Install
 
-Python 3.12+, `uv`, Modal logged in (`modal setup`).
+Python >= 3.12 and a Modal account (`modal setup`).
+
+```bash
+uv add git+https://github.com/modal-projects/distributed-sqlite.git
+```
+
+Deploy from a checkout (or editable install) so Image builds can
+`add_local_python_source("sqlite_modal")`. PyPI is not set up yet.
 
 ```bash
 uv sync
@@ -38,17 +49,28 @@ with conn:
     conn.pull()
 ```
 
-- `from_name` — create/lookup App `sqlite-modal-{name}` (`create_options` → `@app.server`)
-- `connect(path)` — local `ConnectionSync`; waits until the Server is up
+- `from_name` creates or looks up App `sqlite-modal-{name}` (`create_options` → `@app.server`)
+- `connect(path)` opens a local `ConnectionSync` and waits until the Server is up
 - Sync is explicit (`push` / `pull`). Conflicts are last-push-wins.
-- Prefer `max_containers=1`. Use `min_containers=1` if you don’t want cold starts.
+- Prefer `max_containers=1`. Use `min_containers=1` if you don't want cold starts.
+- The sync URL is unauthenticated. Anyone who has it can `push` / `pull`.
+- Volume persist runs when the Server exits.
 
-## Commands
+## Examples
 
 ```bash
 uv run python examples/notes/app.py
 uv run python examples/multi/app.py
+```
 
+| Kit | When |
+|-----|------|
+| [`examples/notes/`](examples/notes/) | One named DB |
+| [`examples/multi/`](examples/multi/) | Two Apps, two names |
+
+## Development
+
+```bash
 uv run pytest
 uv run ruff check sqlite_modal examples benchmarks tests
 uv run ty check sqlite_modal examples benchmarks tests
@@ -59,15 +81,6 @@ uv run python benchmarks/app.py --cold            # optional
 ```
 
 Details: [benchmarks/README.md](benchmarks/README.md).
-
-## Layout
-
-| Path | Role |
-|------|------|
-| `sqlite_modal/database.py` | `Sqlite` |
-| `sqlite_modal/remote.py` | `SyncServer`, deploy, `CreateOptions` |
-| `sqlite_modal/turso.py` | pins + Image |
-| `examples/`, `benchmarks/` | smoke + benches |
 
 ## Benchmarks
 
@@ -84,3 +97,7 @@ Details: [benchmarks/README.md](benchmarks/README.md).
 ![Sync latency](docs/charts/sync_latency.png)
 
 ![Local throughput](docs/charts/throughput.png)
+
+## License
+
+[Apache License 2.0](LICENSE)

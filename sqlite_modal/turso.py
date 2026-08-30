@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import modal
 
-# Pin a known-compatible tursodb ↔ pyturso pair (Tursodal-era sync protocol).
+# Pin a known-compatible tursodb and pyturso pair for the sync protocol.
 TURSODB_VERSION = "0.6.0"
 PYTURSO_VERSION = "0.5.1"
 
