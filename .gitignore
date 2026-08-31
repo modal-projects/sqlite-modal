@@ -18,6 +18,7 @@ htmlcov/
 *.db
 *.db-wal
 *.db-shm
+*.db-info
 dev.db
 
 # Bench / local runs
@@ -32,6 +33,7 @@ benchmarks/results/
 !.env.example
 
 # Tooling / OS
+.cursor/
 .modal/
 .DS_Store
 .idea/

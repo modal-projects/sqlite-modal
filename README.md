@@ -82,6 +82,8 @@ uv run python benchmarks/app.py --cold            # optional
 
 Details: [benchmarks/README.md](benchmarks/README.md).
 
+CI runs on a Modal runner pool. Deploy it from [`runners/`](runners/).
+
 ## Benchmarks
 
 `uk` / `eu-west`, warm `bench` (`min_containers=1`):

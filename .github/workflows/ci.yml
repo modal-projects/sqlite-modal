@@ -2,21 +2,33 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - modal
+      - ci
+      - job-${{ github.run_id }}-${{ github.job }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - name: Sync
-        run: uv sync --group dev --group bench
+        run: uv sync --locked --group dev --group bench
       - name: Ruff
         run: uv run ruff check sqlite_modal examples benchmarks tests
+      - name: Ruff format
+        run: uv run ruff format --check sqlite_modal examples benchmarks tests
       - name: Ty
         run: uv run ty check sqlite_modal examples benchmarks tests
       - name: Pytest
