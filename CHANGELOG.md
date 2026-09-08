@@ -15,3 +15,4 @@
 - Image installs `tursodb` from the versioned tarball and checks SHA-256.
 - CI is `contents: read` and pins `actions/checkout` / `astral-sh/setup-uv` to commit SHAs.
 - CI runs on GitHub-hosted `ubuntu-latest`.
+- Docs and examples no longer recommend `max_containers=1`.

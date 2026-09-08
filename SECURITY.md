@@ -17,8 +17,6 @@ conflicts on that name are last-push-wins.
 `server.db*` is copied to the Volume when the Server exits. A crash
 before exit can lose data that was only in the hot file.
 
-Prefer `max_containers=1` so two writers do not race the same primary.
-
 ## CI
 
 Repo CI runs on GitHub-hosted `ubuntu-latest`. The workflow grants

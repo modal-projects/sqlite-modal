@@ -51,11 +51,7 @@ uv sync --group bench  # charts
 ```python
 from sqlite_modal import Sqlite
 
-db = Sqlite.from_name(
-    "orders",
-    create_if_missing=True,
-    create_options={"max_containers": 1},  # recommended
-)
+db = Sqlite.from_name("orders", create_if_missing=True)
 conn = db.connect("./orders.db")
 with conn:
     conn.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")
@@ -68,7 +64,7 @@ with conn:
 - `from_name` creates or looks up App `sqlite-modal-{name}` (`create_options` → `@app.server`)
 - `connect(path)` opens a local connection and waits until the Server is up
 - Sync is explicit (`push` / `pull`). Conflicts are last-push-wins.
-- Prefer `max_containers=1`. Use `min_containers=1` if you don't want cold starts.
+- Use `min_containers=1` if you don't want cold starts.
 - The sync URL is unauthenticated. Anyone who has it can `push` / `pull`.
 - Volume persist runs when the Server exits.
 

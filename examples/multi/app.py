@@ -16,11 +16,7 @@ HERE = Path(__file__).resolve().parent
 
 def main() -> None:
     for name, body in (("multi_a", "alpha"), ("multi_b", "beta")):
-        db = Sqlite.from_name(
-            name,
-            create_if_missing=True,
-            create_options={"max_containers": 1},
-        )
+        db = Sqlite.from_name(name, create_if_missing=True)
         conn = db.connect(HERE / f".{name}.db")
         with conn:
             conn.execute(
