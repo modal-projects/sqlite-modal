@@ -62,6 +62,7 @@ with conn:
 ```
 
 - `from_name` creates or looks up App `sqlite-modal-{name}` (`create_options` → `@app.server`)
+- One SyncServer container per name. `max_containers` is fixed at 1.
 - `connect(path)` opens a local connection and waits until the Server is up
 - Sync is explicit (`push` / `pull`). Conflicts are last-push-wins.
 - Use `min_containers=1` if you don't want cold starts.

@@ -27,7 +27,7 @@ def test_from_name_rejects_invalid() -> None:
 
 def test_create_options_requires_create_if_missing() -> None:
     with pytest.raises(ValueError, match="create_options requires"):
-        Sqlite.from_name("orders", create_options={"max_containers": 1})
+        Sqlite.from_name("orders", create_options={"min_containers": 1})
 
 
 def test_from_name_missing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -55,13 +55,13 @@ def test_from_name_create_if_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     db = Sqlite.from_name(
         "orders",
         create_if_missing=True,
-        create_options={"max_containers": 1, "compute_region": "uk"},
+        create_options={"min_containers": 1, "compute_region": "uk"},
     )
     assert db.name == "orders"
     assert deployed["name"] == "orders"
     assert deployed["kwargs"] == {
         "create_options": {
-            "max_containers": 1,
+            "min_containers": 1,
             "compute_region": "uk",
         },
         "environment_name": None,

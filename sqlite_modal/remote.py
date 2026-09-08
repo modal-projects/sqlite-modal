@@ -50,7 +50,6 @@ class CreateOptions(TypedDict, total=False):
     routing_region: str
     target_concurrency: int
     min_containers: int
-    max_containers: int
     buffer_containers: int
     scaleup_window: int
     scaledown_window: int
@@ -176,6 +175,8 @@ class RemoteApp:
         client: modal.Client | None = None,
     ) -> modal.App:
         opts: CreateOptions = create_options or {}
+        if "max_containers" in dict(opts):
+            raise ValueError("max_containers is fixed at 1; one SyncServer per name")
         data_volume = modal.Volume.from_name(
             volume_name(name),
             create_if_missing=True,
@@ -203,7 +204,7 @@ class RemoteApp:
             ephemeral_disk=opts.get("ephemeral_disk"),
             target_concurrency=opts.get("target_concurrency"),
             min_containers=opts.get("min_containers"),
-            max_containers=opts.get("max_containers"),
+            max_containers=1,
             buffer_containers=opts.get("buffer_containers"),
             scaleup_window=opts.get("scaleup_window"),
             scaledown_window=opts.get("scaledown_window"),

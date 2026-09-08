@@ -12,13 +12,11 @@ COLD_SCALEDOWN_S = 15
 COLD_WAIT_S = float(COLD_SCALEDOWN_S + 20)
 
 WARM_OPTIONS: CreateOptions = {
-    "max_containers": 1,
     "min_containers": 1,
     "compute_region": REGION,
     "routing_region": ROUTING_REGION,
 }
 COLD_OPTIONS: CreateOptions = {
-    "max_containers": 1,
     "min_containers": 0,
     "scaledown_window": COLD_SCALEDOWN_S,
     "compute_region": REGION,

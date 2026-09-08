@@ -3,9 +3,45 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
+from unittest.mock import MagicMock
 
-from sqlite_modal.remote import ServerStore, SyncServer
+import pytest
+
+from sqlite_modal.remote import CreateOptions, RemoteApp, ServerStore, SyncServer
+from sqlite_modal import remote as remote_mod
 from sqlite_modal.turso import volume_name
+
+
+def test_deploy_rejects_max_containers_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        remote_mod.modal.Volume, "from_name", lambda *a, **k: MagicMock()
+    )
+    with pytest.raises(ValueError, match="max_containers is fixed at 1"):
+        RemoteApp.deploy(
+            "orders",
+            create_options=cast(CreateOptions, {"max_containers": 4}),
+        )
+
+
+def test_deploy_pins_single_sync_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = MagicMock()
+
+    def fake_app(name: str) -> MagicMock:
+        assert name == "sqlite-modal-orders"
+        return app
+
+    monkeypatch.setattr(
+        remote_mod.modal.Volume, "from_name", lambda *a, **k: MagicMock()
+    )
+    monkeypatch.setattr(remote_mod.modal, "App", fake_app)
+    monkeypatch.setattr(remote_mod.modal, "enable_output", MagicMock())
+
+    RemoteApp.deploy("orders", create_options={"compute_region": "uk"})
+    assert app.server.call_args.kwargs["max_containers"] == 1
+    app.deploy.assert_called_once()
 
 
 def test_volume_name_is_per_db() -> None:

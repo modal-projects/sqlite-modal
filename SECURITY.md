@@ -11,8 +11,8 @@ database. Treat the URL as a capability. Do not share it.
 
 ## Volume
 
-Each name gets its own Volume (`sqlite-modal-{name}-data`). `push`
-conflicts on that name are last-push-wins.
+Each name gets its own Volume (`sqlite-modal-{name}-data`) and one
+SyncServer container. `push` conflicts on that name are last-push-wins.
 
 `server.db*` is copied to the Volume when the Server exits. A crash
 before exit can lose data that was only in the hot file.
